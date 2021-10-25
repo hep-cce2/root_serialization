@@ -107,6 +107,7 @@ target_link_libraries(threaded_io_test
                               zstd::libzstd_shared
                               hdf5)
 
+add_subdirectory(mpi)
 add_subdirectory(cms)
 add_subdirectory(test_classes)
 
