@@ -26,6 +26,5 @@ cce::tf::outputerFactoryGenerator(std::string_view iType, std::string_view iOpti
 
     return maker;
   };
-
   return outFactory;
 }

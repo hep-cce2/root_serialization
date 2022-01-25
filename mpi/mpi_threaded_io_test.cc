@@ -127,14 +127,15 @@ int main(int argc, char* argv[]) {
   break;
   case 1:
     //only supported for HDFOutputer
-    if (!outputType.compare("HDFOutputer")) {
+    if (!outputType.compare("PHDFOutputer")) {
       std::cout << "Writing to a single file is only supported for HDF5\n";
       return 1;
     }
     break;
   case 2:
     //only supported for HDFOutputer
-    if (!outputType.compare("HDFOutputer")) {
+    std::cout << outputType << std::endl;
+    if (outputType.compare("PHDFOutputer")) {
       std::cout << "Writing to a single file is only supported for HDF5\n";
       return 1;
     }

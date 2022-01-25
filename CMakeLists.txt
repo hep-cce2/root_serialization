@@ -60,6 +60,7 @@ add_executable(threaded_io_test
   HDFOutputer.cc
   HDFSource.cc
   Lane.cc
+  PHDFOutputer.cc
   PDSOutputer.cc
   PDSSource.cc
   RepeatingRootSource.cc
@@ -91,8 +92,8 @@ add_executable(threaded_io_test
   sourceFactoryGenerator.cc
   threaded_io_test.cc)
 
-target_include_directories(threaded_io_test PRIVATE "${PROJECT_BINARY_DIR}" ${HDF5_DIR}/include)
-target_link_directories(threaded_io_test PRIVATE ${HDF5_DIR}/lib)
+target_include_directories(threaded_io_test PRIVATE "${PROJECT_BINARY_DIR}" ${HDF5_DIR}/include ${MPI_DIR}/include)
+target_link_directories(threaded_io_test PRIVATE ${HDF5_DIR}/lib ${MPI_DIR}/lib)
 
 target_link_libraries(threaded_io_test
                       PRIVATE LZ4::lz4
@@ -105,7 +106,8 @@ target_link_libraries(threaded_io_test
                               sequence_classes_dict
                               batchevents_classes_dict
                               zstd::libzstd_shared
-                              hdf5)
+                              hdf5
+                              ${MPI_DIR}/lib/libmpi.so)
 
 add_subdirectory(mpi)
 add_subdirectory(cms)

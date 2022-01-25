@@ -83,7 +83,7 @@ Mpi::Mpi(int argc, char* argv[])
 {
   int provided;
   MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
-  assert(provided == MPI_THREAD_MULTIPLE);
+  //assert(provided == MPI_THREAD_MULTIPLE);
   MPI_Comm_size(MPI_COMM_WORLD, &np_);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
   hostid_ = (unsigned int)(gethostid());

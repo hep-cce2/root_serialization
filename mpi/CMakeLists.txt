@@ -1,6 +1,7 @@
 # adding for mpi version of threaded_io_test
 add_executable(mpi_threaded_io_test
   ../DeserializeStrategy.cc
+  ../PHDFOutputer.cc
   ../HDFOutputer.cc
   ../HDFSource.cc
   ../Lane.cc
