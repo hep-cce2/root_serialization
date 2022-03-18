@@ -185,3 +185,17 @@ if(ENABLE_HDF5)
   add_test(NAME TestProductsHDFEvent COMMAND bash -c "${CMAKE_CURRENT_BINARY_DIR}/threaded_io_test -s TestProductsSource -t 1 -n 10 -o HDFEventOutputer=test_prod_e.h5")
   #; ${CMAKE_CURRENT_BINARY_DIR}/threaded_io_test -s HDFSource=test_prodi_e.h5 -t 1 -n 10 -o TestProductsOutputer")
 endif()
+
+option(ENABLE_S3 "Build S3 Sources and Outputers" OFF) # default OFF
+if(ENABLE_S3)
+  if(NOT DEFINED LIBS3_DIR)
+    message(FATAL_ERROR "You must provide LIBS3_DIR variable")
+  endif()
+  target_sources(threaded_io_test PRIVATE
+    S3Outputer.cc
+    )
+  target_include_directories(threaded_io_test PRIVATE ${LIBS3_DIR}/include)
+  target_link_directories(threaded_io_test PRIVATE ${LIBS3_DIR}/lib)
+  target_link_libraries(threaded_io_test PRIVATE s3)
+  # add_test(NAME S3OutputerEmptyTest COMMAND threaded_io_test EmptySource 1 1 0 10 S3Outputer)
+endif()
