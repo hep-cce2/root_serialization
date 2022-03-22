@@ -18,7 +18,14 @@
 namespace cce::tf {
 class S3Outputer :public OutputerBase {
  public:
-  S3Outputer(unsigned int iNLanes, bool iVerbose): serializers_(iNLanes), verbose_(iVerbose) {}
+  S3Outputer(unsigned int iNLanes, bool iVerbose):
+    serializers_(iNLanes),
+    verbose_(iVerbose),
+    serialTime_{std::chrono::microseconds::zero()},
+    parallelTime_{0}
+  {
+    eventIDs_.reserve(eventFlushSize_);
+  }
 
   void setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) final {
     auto& s = serializers_[iLaneIndex];
@@ -28,10 +35,6 @@ class S3Outputer :public OutputerBase {
     }
     if (outputProductBuffer_.size() == 0) {
       outputProductBuffer_.resize(iDPs.size());
-      for (auto& p : outputProductBuffer_) {
-        // initialize offsets
-        std::get<1>(p).push_back(0);
-      }
     }
     // all lanes see same products? if not we'll need a map
     assert(outputProductBuffer_.size() == iDPs.size());
@@ -77,40 +80,75 @@ class S3Outputer :public OutputerBase {
     auto s = std::begin(iSerializers);
     auto p = std::begin(outputProductBuffer_);
     for(; s != std::end(iSerializers); ++s, ++p) {
-      auto& [global_offset, offsets, buffer] = *p;
+      auto& [global_offset, last_flush, offsets, buffer] = *p;
       size_t offset = buffer.size();
       offsets.push_back(offset);
       buffer.resize(offset + s->blob().size());
       std::copy(s->blob().begin(), s->blob().end(), buffer.begin()+offset);
+      size_t bufferNevents = offsets.size();
 
-      if ( buffer.size() > productBufferFlushMinSize_ ) {
-        size_t bufferNevents = offsets.size() - 1;
+      // first flush when we exceed min size and have an even divisor of eventFlushSize_
+      // subsequent flush when we reach last_flush
+      if (
+          ((last_flush == 0) && (buffer.size() > productBufferFlushMinSize_) && (eventFlushSize_ % bufferNevents == 0))
+          || (bufferNevents == last_flush)
+         )
+      {
         assert(eventIDs_.size() - global_offset == bufferNevents);
         if(verbose_) {
           std::cout << "product buffer for "s + std::string(s->name()) + " is full ("s + std::to_string(buffer.size())
             + " bytes, "s + std::to_string(bufferNevents) + " events), flushing\n" << std::flush;
         }
-        // if ( goodDivisor(bufferNevents) ) ...
-        // must remember chosen divisor?
-        std::vector<uint32_t> offsetsOut {0};
+        std::vector<uint32_t> offsetsOut;
         std::vector<char> bufferOut;
         // use current size as hint
         offsetsOut.reserve(offsets.size());
         bufferOut.reserve(buffer.size());
 
         global_offset += bufferNevents;
+        last_flush = bufferNevents;
         std::swap(offsets, offsetsOut);
         std::swap(buffer, bufferOut);
         // writeAsync(offsetsOut, bufferOut);
       }
     }
 
-    // if ( eventIDs_.size() > eventFlushSize_ )
-    // any buffers with global_offset > 0 should be empty
-    // because the sizes all evenly divide eventFlushSize_
-    // the rest never got big enough, write them out now
-    // merge some together to respect productBufferFlushMinSize_?
+    if ( eventIDs_.size() == eventFlushSize_ ) {
+      if(verbose_) {
+        std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n" << std::flush;
+      }
+      // any buffers with global_offset > 0 should be empty
+      // because the sizes all evenly divide eventFlushSize_
+      // the rest never got big enough, write them out now
+      // merge some together to respect productBufferFlushMinSize_?
+      for(auto& p : outputProductBuffer_) {
+        auto& [global_offset, last_flush, offsets, buffer] = p;
+        size_t bufferNevents = offsets.size();
+        assert((global_offset == 0) ^ (bufferNevents == 0));
+        if (bufferNevents > 0) {
+          if(verbose_) {
+            std::cout << "product buffer for X is full ("s + std::to_string(buffer.size())
+              + " bytes, "s + std::to_string(bufferNevents) + " events), flushing\n" << std::flush;
+          }
+          std::vector<uint32_t> offsetsOut;
+          std::vector<char> bufferOut;
+          // use current size as hint
+          offsetsOut.reserve(offsets.size());
+          bufferOut.reserve(buffer.size());
+
+          global_offset += bufferNevents;
+          last_flush = bufferNevents;
+          std::swap(offsets, offsetsOut);
+          std::swap(buffer, bufferOut);
+          // writeAsync(offsetsOut, bufferOut);
+        }
+        assert(global_offset == eventFlushSize_);
+        global_offset = 0;
+      }
+      eventIDs_.clear();
+    }
   }
+
 private:
   mutable std::vector<std::vector<SerializerWrapper>> serializers_;
   mutable SerialTaskQueue queue_;
@@ -120,8 +158,11 @@ private:
   size_t productBufferFlushMinSize_{1024*512};
   size_t eventFlushSize_{24};
 
-  // starting event index (into eventIDs_), byte offset for each event, contiguous serialized product data
-  using ProductInfo = std::tuple<size_t, std::vector<uint32_t>, std::vector<char>>;
+  // 0: starting event index (into eventIDs_)
+  // 1: last buffer flush size
+  // 2: byte offset for each event
+  // 3: contiguous serialized product data
+  using ProductInfo = std::tuple<size_t, size_t, std::vector<uint32_t>, std::vector<char>>;
   // data product order matches serializers_ inner vector
   mutable std::vector<ProductInfo> outputProductBuffer_;
   mutable std::vector<EventIdentifier> eventIDs_;
