@@ -89,9 +89,11 @@ class S3Outputer :public OutputerBase {
 
       // first flush when we exceed min size and have an even divisor of eventFlushSize_
       // subsequent flush when we reach last_flush
+      // always flush when we reach eventFlushSize_ (for buffers that never get big enough)
       if (
           ((last_flush == 0) && (buffer.size() > productBufferFlushMinSize_) && (eventFlushSize_ % bufferNevents == 0))
           || (bufferNevents == last_flush)
+          || (bufferNevents == eventFlushSize_)
          )
       {
         assert(eventIDs_.size() - global_offset == bufferNevents);
@@ -119,33 +121,16 @@ class S3Outputer :public OutputerBase {
       }
       // any buffers with global_offset > 0 should be empty
       // because the sizes all evenly divide eventFlushSize_
-      // the rest never got big enough, write them out now
-      // merge some together to respect productBufferFlushMinSize_?
       for(auto& p : outputProductBuffer_) {
         auto& [global_offset, last_flush, offsets, buffer] = p;
-        size_t bufferNevents = offsets.size();
-        assert((global_offset == 0) ^ (bufferNevents == 0));
-        if (bufferNevents > 0) {
-          if(verbose_) {
-            std::cout << "product buffer for X is full ("s + std::to_string(buffer.size())
-              + " bytes, "s + std::to_string(bufferNevents) + " events), flushing\n" << std::flush;
-          }
-          std::vector<uint32_t> offsetsOut;
-          std::vector<char> bufferOut;
-          // use current size as hint
-          offsetsOut.reserve(offsets.size());
-          bufferOut.reserve(buffer.size());
-
-          global_offset += bufferNevents;
-          last_flush = bufferNevents;
-          std::swap(offsets, offsetsOut);
-          std::swap(buffer, bufferOut);
-          // writeAsync(offsetsOut, bufferOut);
-        }
+        assert(bufferNevents == 0);
         assert(global_offset == eventFlushSize_);
         global_offset = 0;
       }
-      eventIDs_.clear();
+      std::vector<EventIdentifier> eventIDsOut;
+      eventIDsOut.reserve(eventFlushSize_);
+      std::swap(eventIDs_, eventIDsOut);
+      // writeAsync(eventIDsOut);
     }
   }
 
