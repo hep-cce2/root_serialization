@@ -193,6 +193,7 @@ if(ENABLE_S3)
   endif()
   target_sources(threaded_io_test PRIVATE
     S3Outputer.cc
+    S3Common.cc
     )
   target_include_directories(threaded_io_test PRIVATE ${LIBS3_DIR}/include)
   target_link_directories(threaded_io_test PRIVATE ${LIBS3_DIR}/lib)

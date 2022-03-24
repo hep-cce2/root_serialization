@@ -13,14 +13,17 @@
 #include "summarize_serializers.h"
 #include "SerialTaskQueue.h"
 
-#include "libs3.h"
+#include "S3Common.h"
 
 namespace cce::tf {
-class S3Outputer :public OutputerBase {
+class S3Outputer : public OutputerBase {
  public:
-  S3Outputer(unsigned int iNLanes, bool iVerbose):
+  S3Outputer(unsigned int iNLanes, int iVerbose, size_t iProductBufferFlush, size_t iEventFlushSize, S3ConnectionRef conn):
     serializers_(iNLanes),
     verbose_(iVerbose),
+    productBufferFlushMinSize_(iProductBufferFlush),
+    eventFlushSize_(iEventFlushSize),
+    conn_(conn),
     serialTime_{std::chrono::microseconds::zero()},
     parallelTime_{0}
   {
@@ -64,7 +67,9 @@ class S3Outputer :public OutputerBase {
   }
 
   void printSummary() const final {
-    summarize_serializers(serializers_);
+    if(verbose_ >= 2) {
+      summarize_serializers(serializers_);
+    }
     std::cout <<"S3Outputer\n  total serial time at end event: "<<serialTime_.count()<<"us\n"
       "  total parallel time at end event: "<<parallelTime_.load()<<"us\n";
   }
@@ -72,7 +77,7 @@ class S3Outputer :public OutputerBase {
  private:
   void output(EventIdentifier const& iEventID, std::vector<SerializerWrapper> const& iSerializers) const {
     using namespace std::string_literals;
-    if(verbose_) {
+    if(verbose_ >= 2) {
       std::cout <<"   run:"s+std::to_string(iEventID.run)+" lumi:"s+std::to_string(iEventID.lumi)+" event:"s+std::to_string(iEventID.event)+"\n"<<std::flush;
     }
     eventIDs_.push_back(iEventID);
@@ -97,7 +102,7 @@ class S3Outputer :public OutputerBase {
          )
       {
         assert(eventIDs_.size() - global_offset == bufferNevents);
-        if(verbose_) {
+        if(verbose_ >= 2) {
           std::cout << "product buffer for "s + std::string(s->name()) + " is full ("s + std::to_string(buffer.size())
             + " bytes, "s + std::to_string(bufferNevents) + " events), flushing\n" << std::flush;
         }
@@ -116,7 +121,7 @@ class S3Outputer :public OutputerBase {
     }
 
     if ( eventIDs_.size() == eventFlushSize_ ) {
-      if(verbose_) {
+      if(verbose_ >= 2) {
         std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n" << std::flush;
       }
       // any buffers with global_offset > 0 should be empty
@@ -139,9 +144,10 @@ private:
   mutable SerialTaskQueue queue_;
 
   // configuration options
-  bool verbose_;
-  size_t productBufferFlushMinSize_{1024*512};
-  size_t eventFlushSize_{24};
+  int verbose_;
+  size_t productBufferFlushMinSize_;
+  size_t eventFlushSize_;
+  S3ConnectionRef conn_;
 
   // 0: starting event index (into eventIDs_)
   // 1: last buffer flush size
