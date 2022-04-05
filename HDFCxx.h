@@ -35,17 +35,19 @@ template<> inline hid_t H5memtype_for<std::string> = string_type();
 //wrapper for File
 class File {
   public:
-    static File create(const char *name, bool parallel) {
-      if (parallel) {
+    static File create(const char *name) {
+      return File(H5Fcreate(name, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT));
+    }
+
+    static File parallel_create(const char *name) {
         MPI_Info info;
         MPI_Info_create(&info);
         auto plist_id = H5Pcreate (H5P_FILE_ACCESS);
         auto  ret = H5Pset_fapl_mpio(plist_id, MPI_COMM_WORLD, info);
         std::cout << "Trying to create file in MPI mode\n"; 
         return File(H5Fcreate(name, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id));
-      }
-      return File(H5Fcreate(name, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT));
-    } 
+    }
+
     static File open(const char *name) {
       return File(H5Fopen(name, H5F_ACC_RDONLY, H5P_DEFAULT));
     }
