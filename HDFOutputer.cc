@@ -36,10 +36,47 @@ namespace {
     auto mem_space = hdf5::Dataspace::create_simple(ndims, slab_size, max_dims);
     dset.write<T>(mem_space, new_fspace, data); //H5Dwrite
   }
+
+template <typename T> 
+void 
+  write_ds_collective(hid_t gid, 
+           std::string name, 
+           std::vector<T> const& data) {
+    constexpr hsize_t ndims = 1;
+    auto dset = hdf5::Dataset::open(gid, name.c_str()); 
+    auto old_fspace = hdf5::Dataspace::get_space(dset);
+    hsize_t max_dims[ndims]; //= {H5S_UNLIMITED};
+    hsize_t old_dims[ndims]; //our datasets are 1D
+    H5Sget_simple_extent_dims(old_fspace, old_dims,max_dims);
+    
+    int buff_size = static_cast<int>(data.size());
+    int tot_buff_size;
+    MPI_Scan(&buff_size,&tot_buff_size,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
+    int max_buff_size;
+    MPI_Allreduce(&tot_buff_size,&max_buff_size,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
+     
+    int parcel[1] = {max_buff_size};
+    
+    MPI_Bcast(&parcel,1,MPI_INT,0,MPI_COMM_WORLD);
+
+    //now old_dims[0] has existing length
+    //we need to extend by the size of data
+    hsize_t new_dims[ndims];
+    //new_dims[0] = old_dims[0] + data.size();
+    new_dims[0] = old_dims[0]+parcel[0];
+    hsize_t slab_size[ndims];
+    hsize_t offset[1] = {old_dims[0]+tot_buff_size-buff_size};
+   slab_size[0] = data.size();
+    dset.set_extent(new_dims);
+    auto new_fspace = hdf5::Dataspace::get_space (dset);
+    new_fspace.select_hyperslab(offset, slab_size);
+    auto mem_space = hdf5::Dataspace::create_simple(ndims, slab_size, max_dims);
+    dset.write<T>(mem_space, new_fspace, data); //H5Dwrite
+  }
 }
 
 HDFOutputer::HDFOutputer(std::string const& iFileName, unsigned int iNLanes, int iBatchSize, int iChunkSize) : 
-  file_(hdf5::File::create(iFileName.c_str())),
+  file_(hdf5::File::parallel_create(iFileName.c_str())),
   chunkSize_{iChunkSize},
   maxBatchSize_{iBatchSize},
   serializers_{std::size_t(iNLanes)},
@@ -147,6 +184,20 @@ HDFOutputer::writeBatch() {
   }
 }
 
+
+void
+HDFOutputer::writeBatch_Coll() {
+  hdf5::Group gid = hdf5::Group::open(file_, "Lumi");   
+  write_ds_collective<int>(gid, "Event_IDs", events_);
+  auto const dpi_size = dataProductIndices_.size();
+  for(auto & [name, index]: dataProductIndices_) {
+    auto [prods, sizes] = get_prods_and_sizes(products_, index, dpi_size);
+    write_ds_collective<char>(gid, name, prods);
+    auto s = name+"_sz";
+    write_ds_collective<size_t>(gid, s, sizes);
+  }
+}
+
 void 
 HDFOutputer::writeFileHeader(EventIdentifier const& iEventID, 
                              std::vector<SerializerWrapper> const& iSerializers) {
@@ -175,7 +226,10 @@ HDFOutputer::writeFileHeader(EventIdentifier const& iEventID,
     hdf5::Dataset d = hdf5::Dataset::create<char>(g, dp_name.c_str(), space, prop);
     std::string classname(s.className());
     hdf5::Attribute a = hdf5::Attribute::create<std::string>(d, "classname", scalar_space);
-    a.write<std::string>(classname);
+    a.write<std::string>(classname); 
+    hdf5::DataXfer xfer = hdf5::DataXfer::create();
+    H5Pset_dxpl_mpio(xfer,H5FD_MPIO_COLLECTIVE);
+    
     hdf5::Dataset::create<size_t>(g, dp_sz.c_str(), space, prop);
   }
 }
