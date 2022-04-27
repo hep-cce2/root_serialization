@@ -40,18 +40,19 @@ class File {
     }
 
     static File parallel_create(const char *name) {
-        MPI_Info info;
-        MPI_Info_create(&info);
-        auto plist_id = H5Pcreate (H5P_FILE_ACCESS);
-        auto  ret = H5Pset_fapl_mpio(plist_id, MPI_COMM_WORLD, info);
+        MPI_Info info_;
+        MPI_Info_create(&info_);
+        hid_t plist_id_ = H5Pcreate (H5P_FILE_ACCESS);
+        auto  ret = H5Pset_fapl_mpio(plist_id_, MPI_COMM_SELF, info_);
         std::cout << "Trying to create file in MPI mode\n"; 
-        return File(H5Fcreate(name, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id));
+        return File(H5Fcreate(name, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id_));
     }
 
     static File open(const char *name) {
       return File(H5Fopen(name, H5F_ACC_RDONLY, H5P_DEFAULT));
     }
     ~File() {
+     // H5Pclose(plist_id_);
       H5Fclose(file_);
     }
     operator hid_t() const {return file_;}
@@ -61,7 +62,9 @@ class File {
         throw std::runtime_error("Unable to create/open the file\n");
       }
     }
+   // hid_t plist_id_;
     hid_t file_;
+   // MPI_Info info_;
 };
 //wrapper for Group
 class Group {
@@ -209,6 +212,25 @@ class Property {
       }
     }
     hid_t prop_;
+};
+
+class DataXfer{
+    public:
+      static DataXfer create(){
+	 return DataXfer(H5Pcreate(H5P_DATASET_XFER));
+
+  }
+  ~DataXfer(){H5Pclose(xf_id_);}
+  operator hid_t() const {return xf_id_;};
+  void set_mpio(){
+     H5Pset_dxpl_mpio(xf_id_,H5FD_MPIO_COLLECTIVE);
+  }
+  private:
+   explicit DataXfer(hid_t xf_id):xf_id_(xf_id){
+      if(xf_id_<0)
+	     throw std::runtime_error("Unable to create xfer property"); 
+   }
+   hid_t xf_id_;
 };
 }
 #endif

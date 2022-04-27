@@ -17,7 +17,8 @@ namespace {
   {
     herr_t          status;
     H5O_info_t      infobuf;
-    status = H5Oget_info_by_name (loc_id, name, &infobuf, H5O_INFO_BASIC, H5P_DEFAULT);
+    status = H5Oget_info_by_name (loc_id, name, &infobuf, /*H5O_INFO_BASIC,*/ H5P_DEFAULT);
+  
   //We may want to see if H5O_INFO_ALL will be better
     switch (infobuf.type) {
       case H5O_TYPE_DATASET:

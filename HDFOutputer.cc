@@ -48,7 +48,8 @@ void
     hsize_t max_dims[ndims]; //= {H5S_UNLIMITED};
     hsize_t old_dims[ndims]; //our datasets are 1D
     H5Sget_simple_extent_dims(old_fspace, old_dims,max_dims);
-    
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD,&rank); 
     int buff_size = static_cast<int>(data.size());
     int tot_buff_size;
     MPI_Scan(&buff_size,&tot_buff_size,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
@@ -66,7 +67,8 @@ void
     new_dims[0] = old_dims[0]+parcel[0];
     hsize_t slab_size[ndims];
     hsize_t offset[1] = {old_dims[0]+tot_buff_size-buff_size};
-   slab_size[0] = data.size();
+    std::cout<<" old/new dims "<<old_dims[0]<<" "<<new_dims[0]<<" "<<buff_size<<" "<<rank<<std::endl;
+    slab_size[0] = data.size();
     dset.set_extent(new_dims);
     auto new_fspace = hdf5::Dataspace::get_space (dset);
     new_fspace.select_hyperslab(offset, slab_size);
@@ -164,7 +166,7 @@ HDFOutputer::output(EventIdentifier const& iEventID,
 
   ++batch_;
   if (batch_ == maxBatchSize_) {
-    writeBatch();
+    writeBatch_Coll();
     batch_ = 0;
     products_.clear();
     events_.clear();
@@ -228,8 +230,7 @@ HDFOutputer::writeFileHeader(EventIdentifier const& iEventID,
     hdf5::Attribute a = hdf5::Attribute::create<std::string>(d, "classname", scalar_space);
     a.write<std::string>(classname); 
     hdf5::DataXfer xfer = hdf5::DataXfer::create();
-    H5Pset_dxpl_mpio(xfer,H5FD_MPIO_COLLECTIVE);
-    
+    xfer.set_mpio();    
     hdf5::Dataset::create<size_t>(g, dp_sz.c_str(), space, prop);
   }
 }
