@@ -48,16 +48,13 @@ void
     hsize_t max_dims[ndims]; //= {H5S_UNLIMITED};
     hsize_t old_dims[ndims]; //our datasets are 1D
     H5Sget_simple_extent_dims(old_fspace, old_dims,max_dims);
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD,&rank); 
     int buff_size = static_cast<int>(data.size());
-    int tot_buff_size;
+    int tot_buff_size=0;
     MPI_Scan(&buff_size,&tot_buff_size,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
-    int max_buff_size;
+    int max_buff_size=0;
     MPI_Allreduce(&tot_buff_size,&max_buff_size,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
      
     int parcel[1] = {max_buff_size};
-    
     MPI_Bcast(&parcel,1,MPI_INT,0,MPI_COMM_WORLD);
 
     //now old_dims[0] has existing length
@@ -67,7 +64,6 @@ void
     new_dims[0] = old_dims[0]+parcel[0];
     hsize_t slab_size[ndims];
     hsize_t offset[1] = {old_dims[0]+tot_buff_size-buff_size};
-    std::cout<<" old/new dims "<<old_dims[0]<<" "<<new_dims[0]<<" "<<buff_size<<" "<<rank<<std::endl;
     slab_size[0] = data.size();
     dset.set_extent(new_dims);
     auto new_fspace = hdf5::Dataspace::get_space (dset);
@@ -134,6 +130,36 @@ void HDFOutputer::printSummary() const  {
   summarize_serializers(serializers_);
 }
 
+
+
+std::pair<product_t, std::vector<size_t>> 
+HDFOutputer::
+get_prods_and_sizes_collective(std::vector<product_t> & input, 
+         int prod_index, 
+         int stride) {
+  product_t products;
+  int rank,size;
+  MPI_Comm_rank(MPI_COMM_WORLD,&rank);
+  MPI_Comm_size(MPI_COMM_WORLD,&size); 
+  std::vector<size_t> sizes;
+  sizes.reserve(input.size()); 
+  for(int j = prod_index; j< input.size(); j+=stride) {	 
+     
+   int input_size = 0;
+   if(offsets_[prod_index]==0){
+     input_size = input[j].size()+input[j].size()*rank;
+
+    } 
+    else{
+     input_size = size*input[j].size();
+    }
+    sizes.push_back(offsets_[prod_index]+=input_size);
+    products.insert(end(products), std::make_move_iterator(begin(input[j])), std::make_move_iterator(end(input[j])));
+  }
+  return {products, sizes};
+}
+
+
 std::pair<product_t, std::vector<size_t>> 
 HDFOutputer::
 get_prods_and_sizes(std::vector<product_t> & input, 
@@ -149,8 +175,6 @@ get_prods_and_sizes(std::vector<product_t> & input,
   }
   return {products, sizes};
 }
-
-
 
 void 
 HDFOutputer::output(EventIdentifier const& iEventID, 
@@ -192,8 +216,9 @@ HDFOutputer::writeBatch_Coll() {
   hdf5::Group gid = hdf5::Group::open(file_, "Lumi");   
   write_ds_collective<int>(gid, "Event_IDs", events_);
   auto const dpi_size = dataProductIndices_.size();
+
   for(auto & [name, index]: dataProductIndices_) {
-    auto [prods, sizes] = get_prods_and_sizes(products_, index, dpi_size);
+    auto [prods, sizes] = get_prods_and_sizes_collective(products_, index, dpi_size);
     write_ds_collective<char>(gid, name, prods);
     auto s = name+"_sz";
     write_ds_collective<size_t>(gid, s, sizes);

@@ -42,9 +42,12 @@ namespace cce::tf {
   void writeFileHeader(EventIdentifier const& iEventID, std::vector<SerializerWrapper> const& iSerializers);
 
   std::vector<std::vector<char>> writeDataProductsToOutputBuffer(std::vector<SerializerWrapper> const& iSerializers) const;
-std::pair<product_t, std::vector<size_t>> get_prods_and_sizes(std::vector<product_t> & input,int prod_index,int stride);
-private:
+  std::pair<product_t, std::vector<size_t>> get_prods_and_sizes(std::vector<product_t> & input,int prod_index,int stride);
+  std::pair<product_t, std::vector<size_t>> get_prods_and_sizes_collective(std::vector<product_t> & input,int prod_index,int stride);
+
+ private:
  void writeBatch();
+ void writeBatch_Coll();
 
   hdf5::File file_;
   mutable SerialTaskQueue queue_;

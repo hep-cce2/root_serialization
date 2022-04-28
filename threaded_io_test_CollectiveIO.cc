@@ -160,17 +160,16 @@ int main(int argc, char* argv[]) {
       });
   }
   std::cout <<"finished warmup"<<std::endl;
-  
+  MPI_Barrier(MPI_COMM_WORLD); 
   auto out = outFactory(nLanes);
-  auto source = sourceFactory(nLanes, nevents);
+  auto source = sourceFactory(nLanes, nEvents);
   lanes.reserve(nLanes);
   for(unsigned int i = 0; i< nLanes; ++i) {
     lanes.emplace_back(i, source.get(), scale);
     out->setupForLane(i, lanes.back().dataProducts());
   }
-
-  std::atomic<long> ievt = {firstEvent(rank,nevents)};//{0};
-  std::cout<<"Processing "<<ievt<<" "<<rank<<" Events Per Rank "<<nevents<<std::endl; 
+  auto firstEvent_ = firstEvent(rank,n_per_rank);
+  std::atomic<long> ievt = {firstEvent_};//{firstEvent_};//{0};
   tbb::task_arena arena(parallelism);
 
   decltype(std::chrono::high_resolution_clock::now()) start;
