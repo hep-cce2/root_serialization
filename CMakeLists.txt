@@ -31,6 +31,8 @@ find_package(lz4 REQUIRED)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
+set(HDF5_PREFER_PARALLEL TRUE)
+
 configure_file(ThreadedIOTestConfig.h.in ThreadedIOTestConfig.h)
 
 #make the library for testing
