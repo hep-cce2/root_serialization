@@ -191,9 +191,16 @@ if(ENABLE_S3)
   if(NOT DEFINED LIBS3_DIR)
     message(FATAL_ERROR "You must provide LIBS3_DIR variable")
   endif()
+  find_package(Protobuf REQUIRED)
+  include_directories(${Protobuf_INCLUDE_DIRS})
+  include_directories(${CMAKE_CURRENT_BINARY_DIR})
+  protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS objectstripe.proto)
+  target_link_libraries(threaded_io_test PRIVATE ${Protobuf_LIBRARIES})
   target_sources(threaded_io_test PRIVATE
     S3Outputer.cc
+    # S3Source.cc
     S3Common.cc
+    ${PROTO_SRCS}
     )
   target_include_directories(threaded_io_test PRIVATE ${LIBS3_DIR}/include)
   target_link_directories(threaded_io_test PRIVATE ${LIBS3_DIR}/lib)

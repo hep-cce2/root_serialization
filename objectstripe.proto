@@ -1,0 +1,33 @@
+syntax = "proto2";
+
+package objstripe;
+
+message ObjectStripeIndex {
+  optional uint32 eventStripeSize = 1;
+  optional uint64 totalEvents = 2;
+
+  message Product {
+    optional string productName = 1;
+    optional uint32 flushSize = 2;
+  }
+
+  repeated Product products = 3;
+
+  repeated bytes packedEventStripes = 4;
+}
+
+message EventStripe {
+  message Event {
+    optional uint64 offset = 1;
+    optional uint32 run = 2;
+    optional uint32 lumi = 3;
+    optional uint64 event = 4;
+  }
+
+  repeated Event events = 1;
+}
+
+message ProductStripe {
+  repeated uint32 offsets = 1 [packed = true];
+  optional bytes content = 2;
+}

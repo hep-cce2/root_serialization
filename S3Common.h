@@ -21,7 +21,7 @@ struct S3Request {
   const S3BucketContext* bucketCtx{nullptr};
   const std::string key;
   const Callback callback;
-  std::vector<char> buffer;
+  std::string buffer;
   int timeout{1000}; // milliseconds
   int retriesRemaining{3};
   Status status;
@@ -43,7 +43,7 @@ class S3Connection {
         );
 
     void get(const std::string key, S3Request::Callback&& cb);
-    void put(const std::string key, std::vector<char>&& value, S3Request::Callback&& cb);
+    void put(const std::string key, std::string&& value, S3Request::Callback&& cb);
 
   private:
     const std::string hostName_;

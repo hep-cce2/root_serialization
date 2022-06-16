@@ -24,6 +24,7 @@ class S3LibWrapper {
       }
       running_ = true;
       if ( async_ ) {
+        throw std::runtime_error("Async not supported yet");
         loop_ = std::thread(&S3LibWrapper::loop_body, this);
       }
     }
@@ -38,6 +39,7 @@ class S3LibWrapper {
     bool running() { return running_; }
 
     void get(const S3BucketContext* bucketCtx, const std::string key, S3Request::Callback&& cb) {
+      // start of S3Request lifecycle (s3lib will always call responseCompleteCallback)
       auto req = new S3Request{
         .type = S3Request::Type::get,
         .bucketCtx = bucketCtx,
@@ -52,7 +54,8 @@ class S3LibWrapper {
       }
     }
 
-    void put(const S3BucketContext* bucketCtx, const std::string key, std::vector<char>&& value, S3Request::Callback&& cb) {
+    void put(const S3BucketContext* bucketCtx, const std::string key, std::string&& value, S3Request::Callback&& cb) {
+      // start of S3Request lifecycle (s3lib will always call responseCompleteCallback)
       auto req = new S3Request{
         .type = S3Request::Type::put,
         .bucketCtx = bucketCtx,
@@ -137,6 +140,8 @@ class S3LibWrapper {
       auto req = static_cast<S3Request*>(callbackData);
       if ( S3_status_is_retryable(status) && req->retriesRemaining > 0 ) {
         req->retriesRemaining--;
+        // TODO: back-off algo?
+        // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
         if ( req->owner->async_ ) {
           req->owner->requests_.push(req);
         } else {
@@ -263,6 +268,10 @@ S3Connection::S3Connection(
   secretAccessKey_(iSecretKey),
   securityToken_(iSecurityToken)
 {
+  if ( hostName_ == "devnull") {
+    // magic do-nothing connection
+    return;
+  }
   ctx_.reset(new S3BucketContext{
     .hostName = hostName_.c_str(),
     .bucketName = bucketName_.c_str(),
@@ -276,11 +285,29 @@ S3Connection::S3Connection(
 };
 
 void S3Connection::get(const std::string key, S3Request::Callback&& cb) {
-  s3lib.get(ctx_.get(), key, std::move(cb));
+  if ( ctx_ ) {
+    s3lib.get(ctx_.get(), key, std::move(cb));
+  } else if ( cb ) {
+    S3Request dummy{
+      .type = S3Request::Type::get,
+      .key = key,
+      .status = S3Request::Status::error
+    };
+    cb(&dummy);
+  }
 };
 
-void S3Connection::put(const std::string key, std::vector<char>&& value, S3Request::Callback&& cb) {
-  s3lib.put(ctx_.get(), key, std::move(value), std::move(cb));
+void S3Connection::put(const std::string key, std::string&& value, S3Request::Callback&& cb) {
+  if ( ctx_ ) {
+    s3lib.put(ctx_.get(), key, std::move(value), std::move(cb));
+  } else if ( cb ) {
+    S3Request dummy{
+      .type = S3Request::Type::put,
+      .key = key,
+      .status = S3Request::Status::ok
+    };
+    cb(&dummy);
+  }
 };
 
 }
