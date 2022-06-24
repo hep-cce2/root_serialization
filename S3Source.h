@@ -50,10 +50,6 @@ class S3Source : public SharedSourceBase {
 
     void printSummary() const final;
 
-    bool mayBeAbleToGoToEvent(long int iEventIndex) const final {
-      return SharedSourceBase::mayBeAbleToGoToEvent(iEventIndex) and (iEventIndex < index_.totalevents());
-    };
-
   private:
     void readEventAsync(unsigned int iLane, long iEventIndex, OptionalTaskHolder) final;
 
