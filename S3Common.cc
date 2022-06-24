@@ -135,14 +135,14 @@ class S3LibWrapper {
           if ( req->_owner->async_ ) {
             // TODO: how to async sleep?
           } else {
-            std::cerr << "Got status " << S3_get_status_name(status) << " while running request " << req << ", sleeping for " << dt.count() << "\n";
             // TODO: better option?
             std::this_thread::sleep_for(dt);
             req->_timeout *= 2;
           }
         } else {
-          std::cerr << "Got status " << S3_get_status_name(status) << " while running request " << req << "\n";
+          std::cerr << "Got status " << S3_get_status_name(status) << " while running request " << *req << ", retrying\n";
         }
+        req->_put_offset = 0;
         req->_retries_executed++;
         if ( req->_owner->async_ ) {
           req->_owner->requests_.push(req);
