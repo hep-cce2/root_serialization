@@ -2,18 +2,26 @@ syntax = "proto2";
 
 package objstripe;
 
+enum SerializeStrategy {
+  kRoot = 0;
+  kRootUnrolled = 1;
+}
+
 message ObjectStripeIndex {
   optional uint32 eventStripeSize = 1;
   optional uint64 totalEvents = 2;
 
   message Product {
     optional string productName = 1;
-    optional uint32 flushSize = 2;
+    optional string productType = 2;
+    optional uint32 flushSize = 3;
   }
 
   repeated Product products = 3;
 
   repeated bytes packedEventStripes = 4;
+
+  optional SerializeStrategy serializeStrategy = 5;
 }
 
 message EventStripe {
@@ -25,9 +33,11 @@ message EventStripe {
   }
 
   repeated Event events = 1;
+  // TODO: store product flushSize here?
 }
 
 message ProductStripe {
+  // TODO: global offset (as a cross check)
   repeated uint32 offsets = 1 [packed = true];
   optional bytes content = 2;
 }

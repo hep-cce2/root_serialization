@@ -198,7 +198,7 @@ if(ENABLE_S3)
   target_link_libraries(threaded_io_test PRIVATE ${Protobuf_LIBRARIES})
   target_sources(threaded_io_test PRIVATE
     S3Outputer.cc
-    # S3Source.cc
+    S3Source.cc
     S3Common.cc
     ${PROTO_SRCS}
     )

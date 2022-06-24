@@ -1,12 +1,70 @@
 #include <iostream>
 #include "S3Outputer.h"
 #include "OutputerFactory.h"
+#include "UnrolledSerializerWrapper.h"
+#include "FunctorTask.h"
 
 using namespace cce::tf;
 
+void S3Outputer::setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) {
+  auto& s = serializers_[iLaneIndex];
+  switch(index_.serializestrategy()) {
+    case objstripe::SerializeStrategy::kRoot:
+      s = SerializeStrategy::make<SerializeProxy<SerializerWrapper>>();
+      break;
+    case objstripe::SerializeStrategy::kRootUnrolled:
+      s = SerializeStrategy::make<SerializeProxy<UnrolledSerializerWrapper>>();
+      break;
+    default:
+      throw std::runtime_error("S3Outputer: unrecognized serialization strategy");
+  }
+  s.reserve(iDPs.size());
+  for(auto const& dp: iDPs) {
+    s.emplace_back(dp.name(), dp.classType());
+  }
+  if (currentProductStripes_.size() == 0) {
+    currentProductStripes_.resize(iDPs.size());
+    index_.mutable_products()->Reserve(iDPs.size());
+    for(auto const& ss: s) {
+      auto prod = index_.add_products();
+      prod->set_productname(std::string(ss.name()));
+      prod->set_producttype(ss.className());
+      prod->set_flushsize(0);
+    }
+  }
+  // all lanes see same products? if not we'll need a map
+  assert(currentProductStripes_.size() == iDPs.size());
+}
+
+void S3Outputer::printSummary() const {
+  {
+    tbb::task_group group;
+    {
+      auto start = std::chrono::high_resolution_clock::now();
+      TaskHolder th(group, make_functor_task([](){}));
+      flushProductStripes(th, true);
+      flushEventStripe(th, true);
+      serialTime_ += std::chrono::duration_cast<decltype(serialTime_)>(std::chrono::high_resolution_clock::now() - start);
+    }
+    group.wait();
+  }
+
+  if(verbose_ >= 2) {
+    summarize_serializers(serializers_);
+  }
+  std::chrono::microseconds serializerTime = std::chrono::microseconds::zero();
+  for(const auto& lane : serializers_) {
+    for(const auto& s : lane) {
+      serializerTime += s.accumulatedTime();
+    }
+  }
+  std::cout <<"S3Outputer\n  total serial time at end event: "<<serialTime_.count()<<"us\n"
+    "  total non-serializer parallel time at end event: "<<parallelTime_.load()<<"us\n"
+    "  total serializer parallel time at end event: "<<serializerTime.count()<<"us\n";
+}
 void S3Outputer::output(
     EventIdentifier const& iEventID,
-    std::vector<SerializerWrapper> const& iSerializers,
+    SerializeStrategy const& iSerializers,
     TaskHolder iCallback
     ) const
 {
@@ -20,13 +78,20 @@ void S3Outputer::output(
   sev->set_lumi(iEventID.lumi);
   sev->set_event(iEventID.event);
 
-  auto s = std::begin(iSerializers);
   auto p = std::begin(currentProductStripes_);
   auto pi = index_.mutable_products()->begin();
-  for(; s != std::end(iSerializers); ++s, ++p, ++pi) {
-    size_t offset = p->content().size();
-    p->add_offsets(offset);
-    p->mutable_content()->append(s->blob().begin(), s->blob().end());
+  for(const auto& s : iSerializers) {
+    if (verbose_ >= 2) {
+      std::cout << "adding blob len " << s.blob().size() << " to " << pi->productname() << "\n";
+      for (auto c : s.blob()) {
+        if ( isprint(c) ) std::cout << c;
+        else std::cout << "\\x" << std::hex << (int) c << std::dec;
+      }
+      std::cout << "\n";
+    }
+    p->mutable_content()->append(s.blob().begin(), s.blob().end());
+    p->add_offsets(p->content().size());
+    p++; pi++;
   }
 
   flushProductStripes(iCallback);
@@ -98,12 +163,15 @@ void S3Outputer::flushEventStripe(TaskHolder iCallback, bool last) const {
       assert(p->offsets_size() == 0);
     }
   }
+  index_.set_totalevents(eventGlobalOffset_);
+  if ( last and currentEventStripe_.events_size() == 0 ) {
+    return;
+  }
   objstripe::EventStripe stripeOut;
   stripeOut.mutable_events()->Reserve(eventFlushSize_);
   std::swap(currentEventStripe_, stripeOut);
   // TODO: are we sure writing to dest is threadsafe?
   auto dest = index_.add_packedeventstripes();
-  index_.set_totalevents(eventGlobalOffset_);
   iCallback.group()->run(
     [this, dest, stripeOut=std::move(stripeOut), callback=iCallback]() {
       auto start = std::chrono::high_resolution_clock::now();

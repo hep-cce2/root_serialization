@@ -20,7 +20,7 @@ class SharedSourceBase {
   virtual std::vector<DataProductRetriever>& dataProducts(unsigned int iLane, long iEventIndex) = 0;
   virtual EventIdentifier eventIdentifier(unsigned int iLane, long iEventIndex) = 0;
 
-  bool mayBeAbleToGoToEvent(long int iEventIndex) const;
+  virtual bool mayBeAbleToGoToEvent(long int iEventIndex) const;
 
   //returns false if can immediately tell that can not continue processing
   void gotoEventAsync(unsigned int iLane, long iEventIndex, OptionalTaskHolder);

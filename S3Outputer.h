@@ -10,12 +10,11 @@
 
 #include "OutputerBase.h"
 #include "EventIdentifier.h"
-#include "SerializerWrapper.h"
+#include "SerializeStrategy.h"
 #include "DataProductRetriever.h"
 #include "summarize_serializers.h"
 #include "SerialTaskQueue.h"
 #include "S3Common.h"
-#include "FunctorTask.h"
 #include "objectstripe.pb.h"
 
 namespace cce::tf {
@@ -32,27 +31,12 @@ class S3Outputer : public OutputerBase {
     parallelTime_{0}
   {
     index_.set_eventstripesize(eventFlushSize_);
+    // TODO: make configurable
+    index_.set_serializestrategy(objstripe::SerializeStrategy::kRoot);
     currentEventStripe_.mutable_events()->Reserve(eventFlushSize_);
   }
 
-  void setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) final {
-    auto& s = serializers_[iLaneIndex];
-    s.reserve(iDPs.size());
-    for(auto const& dp: iDPs) {
-      s.emplace_back(dp.name(), dp.classType());
-    }
-    if (currentProductStripes_.size() == 0) {
-      currentProductStripes_.resize(iDPs.size());
-      index_.mutable_products()->Reserve(iDPs.size());
-      for(auto const& dp: iDPs) {
-        auto prod = index_.add_products();
-        prod->set_productname(dp.name());
-        prod->set_flushsize(0);
-      }
-    }
-    // all lanes see same products? if not we'll need a map
-    assert(currentProductStripes_.size() == iDPs.size());
-  }
+  void setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) final;
 
   void productReadyAsync(unsigned int iLaneIndex, DataProductRetriever const& iDataProduct, TaskHolder iCallback) const final {
     assert(iLaneIndex < serializers_.size());
@@ -76,39 +60,14 @@ class S3Outputer : public OutputerBase {
     parallelTime_ += time.count();
   }
 
-  void printSummary() const final {
-    {
-      tbb::task_group group;
-      {
-        auto start = std::chrono::high_resolution_clock::now();
-        TaskHolder th(group, make_functor_task([](){}));
-        flushProductStripes(th, true);
-        flushEventStripe(th, true);
-        serialTime_ += std::chrono::duration_cast<decltype(serialTime_)>(std::chrono::high_resolution_clock::now() - start);
-      }
-      group.wait();
-    }
-
-    if(verbose_ >= 2) {
-      summarize_serializers(serializers_);
-    }
-    std::chrono::microseconds serializerTime = std::chrono::microseconds::zero();
-    for(const auto& lane : serializers_) {
-      for(const auto& s : lane) {
-        serializerTime += s.accumulatedTime();
-      }
-    }
-    std::cout <<"S3Outputer\n  total serial time at end event: "<<serialTime_.count()<<"us\n"
-      "  total non-serializer parallel time at end event: "<<parallelTime_.load()<<"us\n"
-      "  total serializer parallel time at end event: "<<serializerTime.count()<<"us\n";
-  }
+  void printSummary() const final;
 
 private:
-  void output(EventIdentifier const& iEventID, std::vector<SerializerWrapper> const& iSerializers, TaskHolder iCallback) const;
+  void output(EventIdentifier const& iEventID, SerializeStrategy const& iSerializers, TaskHolder iCallback) const;
   void flushProductStripes(TaskHolder iCallback, bool last=false) const;
   void flushEventStripe(TaskHolder iCallback, bool last=false) const;
 
-  mutable std::vector<std::vector<SerializerWrapper>> serializers_;
+  mutable std::vector<SerializeStrategy> serializers_;
   mutable SerialTaskQueue queue_;
 
   // configuration options

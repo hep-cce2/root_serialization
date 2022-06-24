@@ -6,6 +6,7 @@
 #include <iostream>
 #include <thread>
 #include <variant>
+#include <random>
 
 #include "libs3.h"
 #include "tbb/concurrent_queue.h"
@@ -40,13 +41,7 @@ class S3LibWrapper {
 
     void get(const S3BucketContext* bucketCtx, const std::string key, S3Request::Callback&& cb) {
       // start of S3Request lifecycle (s3lib will always call responseCompleteCallback)
-      auto req = new S3Request{
-        .type = S3Request::Type::get,
-        .bucketCtx = bucketCtx,
-        .key = key,
-        .callback = std::move(cb),
-        .owner = this,
-      };
+      auto req = new S3Request(S3Request::Type::get, bucketCtx, key, std::move(cb), this);
       if ( async_ ) {
         requests_.push(req);
       } else {
@@ -56,14 +51,7 @@ class S3LibWrapper {
 
     void put(const S3BucketContext* bucketCtx, const std::string key, std::string&& value, S3Request::Callback&& cb) {
       // start of S3Request lifecycle (s3lib will always call responseCompleteCallback)
-      auto req = new S3Request{
-        .type = S3Request::Type::put,
-        .bucketCtx = bucketCtx,
-        .key = key,
-        .callback = std::move(cb),
-        .buffer = std::move(value),
-        .owner = this,
-      };
+      auto req = new S3Request(S3Request::Type::put, bucketCtx, key, std::move(cb), this, std::move(value));
       if ( async_ ) {
         requests_.push(req);
       } else {
@@ -105,7 +93,7 @@ class S3LibWrapper {
               0, // startByte
               0, // byteCount
               requestContext_,
-              req->timeout,
+              req->_timeout,
               &S3LibWrapper::getObjectHandler,
               static_cast<void*>(req));
           break;
@@ -116,7 +104,7 @@ class S3LibWrapper {
               req->buffer.size(),
               nullptr, // S3PutProperties (TODO probably want .md5)
               requestContext_,
-              req->timeout,
+              req->_timeout,
               &S3LibWrapper::putObjectHandler,
               static_cast<void*>(req));
           break;
@@ -138,15 +126,29 @@ class S3LibWrapper {
 
     static void responseCompleteCallback(S3Status status, const S3ErrorDetails *error, void *callbackData) {
       auto req = static_cast<S3Request*>(callbackData);
-      if ( S3_status_is_retryable(status) && req->retriesRemaining > 0 ) {
-        req->retriesRemaining--;
-        // TODO: back-off algo?
-        // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
-        if ( req->owner->async_ ) {
-          req->owner->requests_.push(req);
+      if ( S3_status_is_retryable(status) && req->_retries_executed < req->retries ) {
+        if ( status == S3Status::S3StatusErrorRequestTimeout ) {
+          // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+          static thread_local std::minstd_rand rng(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+          std::uniform_int_distribution dist(0l, std::min(S3Request::max_timeout.count(), req->_timeout));
+          auto dt = std::chrono::milliseconds(dist(rng));
+          if ( req->_owner->async_ ) {
+            // TODO: how to async sleep?
+          } else {
+            std::cerr << "Got status " << S3_get_status_name(status) << " while running request " << req << ", sleeping for " << dt.count() << "\n";
+            // TODO: better option?
+            std::this_thread::sleep_for(dt);
+            req->_timeout *= 2;
+          }
+        } else {
+          std::cerr << "Got status " << S3_get_status_name(status) << " while running request " << req << "\n";
+        }
+        req->_retries_executed++;
+        if ( req->_owner->async_ ) {
+          req->_owner->requests_.push(req);
         } else {
           // can libs3 callbacks recurse? probably...
-          req->owner->submit(req);
+          req->_owner->submit(req);
         }
         return; // no delete!
       }
@@ -164,10 +166,11 @@ class S3LibWrapper {
 
     static int putObjectDataCallback(int bufferSize, char *buffer, void *callbackData) {
       auto req = static_cast<S3Request*>(callbackData);
-      size_t toWrite = std::min(bufferSize, (int) (req->buffer.size() - req->put_offset));
+      int toWrite = std::min(bufferSize, (int) (req->buffer.size() - req->_put_offset));
+      assert(toWrite >= 0);
       if ( toWrite > 0 ) {
-        std::copy_n(req->buffer.begin() + req->put_offset, toWrite, buffer);
-        req->put_offset += toWrite;
+        std::copy_n(req->buffer.begin() + req->_put_offset, toWrite, buffer);
+        req->_put_offset += toWrite;
       }
       // return > 0 = bytes written, 0 = done, -1 = S3StatusAbortedByCallback
       return toWrite;
@@ -210,6 +213,29 @@ class S3LibWrapper {
 // optional TODO: make it a singleton and only initialize when needed
 S3LibWrapper s3lib;
 
+std::ostream& operator<<(std::ostream& os, const S3Request& req) {
+  os << "S3Request(";
+  switch (req.type) {
+    case S3Request::Type::undef:
+      os << "undef"; break;
+    case S3Request::Type::get:
+      os << "get"; break;
+    case S3Request::Type::put:
+      os << "put"; break;
+  }
+  os << ", key=" << req.key << ", timeout=" << req.timeout.count() << "ms, retries=" << req.retries;
+  os << ", buffer length=" << req.buffer.size() << ", ";
+  switch (req.status) {
+    case S3Request::Status::waiting:
+      os << "waiting"; break;
+    case S3Request::Status::ok:
+      os << "ok"; break;
+    case S3Request::Status::error:
+      os << "error"; break;
+  }
+  os << ") (put offset: " << req._put_offset << ", retries executed: " << req._retries_executed << ")";
+  return os;
+}
 
 S3ConnectionRef S3Connection::from_config(std::string filename) {
   std::ifstream fin(filename);
@@ -288,11 +314,7 @@ void S3Connection::get(const std::string key, S3Request::Callback&& cb) {
   if ( ctx_ ) {
     s3lib.get(ctx_.get(), key, std::move(cb));
   } else if ( cb ) {
-    S3Request dummy{
-      .type = S3Request::Type::get,
-      .key = key,
-      .status = S3Request::Status::error
-    };
+    S3Request dummy(S3Request::Type::get, key, S3Request::Status::error);
     cb(&dummy);
   }
 };
@@ -301,11 +323,7 @@ void S3Connection::put(const std::string key, std::string&& value, S3Request::Ca
   if ( ctx_ ) {
     s3lib.put(ctx_.get(), key, std::move(value), std::move(cb));
   } else if ( cb ) {
-    S3Request dummy{
-      .type = S3Request::Type::put,
-      .key = key,
-      .status = S3Request::Status::ok
-    };
+    S3Request dummy(S3Request::Type::put, key, S3Request::Status::ok);
     cb(&dummy);
   }
 };

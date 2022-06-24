@@ -1,8 +1,10 @@
 #if !defined(S3Common_h)
 #define S3Common_h
 
+#include <chrono>
 #include <memory>
 #include <mutex>
+#include <ostream>
 
 // libs3.h
 struct S3BucketContext;
@@ -12,23 +14,50 @@ class S3LibWrapper;
 class S3Connection;
 typedef std::shared_ptr<S3Connection> S3ConnectionRef;
 
-struct S3Request {
-  enum class Type {undef, get, put}; 
-  enum class Status {ok, error}; 
-  typedef std::function<void(S3Request*)> Callback;
+class S3Request {
+  public:
+    enum class Type {undef, get, put};
+    enum class Status {waiting, ok, error};
+    typedef std::function<void(S3Request*)> Callback;
+    static constexpr std::chrono::milliseconds max_timeout{60000};
 
-  const Type type{Type::undef};
-  const S3BucketContext* bucketCtx{nullptr};
-  const std::string key;
-  const Callback callback;
-  std::string buffer;
-  int timeout{1000}; // milliseconds
-  int retriesRemaining{3};
-  Status status;
-  // "private"
-  S3LibWrapper *const owner{nullptr};
-  size_t put_offset{0};
+    const Type type;
+    const S3BucketContext* bucketCtx;
+    const std::string key;
+    const Callback callback;
+    const std::chrono::milliseconds timeout{1000};
+    const int retries{5};
+    std::string buffer;
+    Status status;
+
+  private:
+    S3Request() = delete;
+    // constructor for devnull connection
+    S3Request(Type iType, std::string iKey, Status stat):
+      type{iType}, key{iKey}, status{stat} {};
+    // get constructor
+    S3Request(Type iType, const S3BucketContext* iCtx, std::string iKey, Callback iCb, S3LibWrapper* iOwner):
+      type{iType}, bucketCtx{iCtx}, key{iKey}, callback{iCb}, _owner{iOwner}
+    {
+      _timeout = timeout.count();
+    };
+    // put constructor
+    S3Request(Type iType, const S3BucketContext* iCtx, std::string iKey, Callback iCb, S3LibWrapper* iOwner, std::string&& buf):
+      type{iType}, bucketCtx{iCtx}, key{iKey}, callback{iCb}, _owner{iOwner}, buffer{buf}
+    {
+      _timeout = timeout.count();
+    };
+
+    S3LibWrapper *const _owner{nullptr};
+    size_t _put_offset{0};
+    int _retries_executed{0};
+    long _timeout;
+
+  friend class S3LibWrapper;
+  friend class S3Connection;
+  friend std::ostream& operator<<(std::ostream& os, const S3Request& req);
 };
+
 
 class S3Connection {
   public:
