@@ -160,7 +160,7 @@ void S3Outputer::flushEventStripe(TaskHolder iCallback, bool last) const {
   if ( not last ) {
     // all buffers should be empty because the sizes all evenly divide eventFlushSize_
     for(auto& p : currentProductStripes_) {
-      assert(p->offsets_size() == 0);
+      assert(p.offsets_size() == 0);
     }
   }
   index_.set_totalevents(eventGlobalOffset_);

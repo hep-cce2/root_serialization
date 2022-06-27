@@ -24,7 +24,7 @@ class S3LibWrapper {
     S3LibWrapper(const S3LibWrapper&) = delete;
     void operator=(const S3LibWrapper&) = delete;
 
-    bool running() { return running_; }
+    bool running() const { return running_; }
 
     void get(const S3BucketContext* bucketCtx, const std::string& key, S3Request::Callback&& cb, bool async=false) {
       // start of S3Request lifecycle (s3lib will always call responseCompleteCallback)
@@ -277,7 +277,7 @@ S3ConnectionRef S3Connection::from_config(const std::string& filename) {
     return {};
   }
 
-  return std::make_shared<S3Connection>(hostName, bucketName, accessKeyId, secretAccessKey, securityToken);
+  return std::make_shared<const S3Connection>(hostName, bucketName, accessKeyId, secretAccessKey, securityToken);
 };
 
 S3Connection::S3Connection(
@@ -309,7 +309,7 @@ S3Connection::S3Connection(
   });
 };
 
-void S3Connection::get(const std::string& key, S3Request::Callback&& cb) {
+void S3Connection::get(const std::string& key, S3Request::Callback&& cb) const {
   if ( ctx_ ) {
     S3LibWrapper::instance().get(ctx_.get(), key, std::move(cb));
   } else if ( cb ) {
@@ -318,7 +318,7 @@ void S3Connection::get(const std::string& key, S3Request::Callback&& cb) {
   }
 };
 
-void S3Connection::put(const std::string& key, std::string&& value, S3Request::Callback&& cb) {
+void S3Connection::put(const std::string& key, std::string&& value, S3Request::Callback&& cb) const {
   if ( ctx_ ) {
     S3LibWrapper::instance().put(ctx_.get(), key, std::move(value), std::move(cb));
   } else if ( cb ) {

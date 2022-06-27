@@ -58,9 +58,9 @@ class S3Source : public SharedSourceBase {
     std::chrono::microseconds decompressTime() const;
     std::chrono::microseconds deserializeTime() const;
 
-    int verbose_;
-    std::string objPrefix_;
-    S3ConnectionRef conn_;
+    const int verbose_;
+    const std::string objPrefix_;
+    const S3ConnectionRef conn_;
     SerialTaskQueue queue_;
 
     objstripe::ObjectStripeIndex index_;
@@ -85,11 +85,11 @@ class S3Source : public SharedSourceBase {
       ~LaneInfo();
     };
 
+    // mutated only by methods called in queue_
     size_t nextEventStripe_ = 0;
     size_t nextEventInStripe_ = 0;
     objstripe::EventStripe currentEventStripe_;
     std::vector<std::shared_ptr<const DelayedProductStripeRetriever>> currentProductStripes_;
-
     std::vector<LaneInfo> laneInfos_;
     std::chrono::microseconds readTime_;
 };

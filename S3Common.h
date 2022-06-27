@@ -11,7 +11,7 @@ struct S3BucketContext;
 namespace cce::tf {
 class S3LibWrapper;
 class S3Connection;
-typedef std::shared_ptr<S3Connection> S3ConnectionRef;
+typedef std::shared_ptr<const S3Connection> S3ConnectionRef;
 
 class S3Request {
   public:
@@ -70,8 +70,8 @@ class S3Connection {
         std::string_view iSecurityToken
         );
 
-    void get(const std::string& key, S3Request::Callback&& cb);
-    void put(const std::string& key, std::string&& value, S3Request::Callback&& cb);
+    void get(const std::string& key, S3Request::Callback&& cb) const;
+    void put(const std::string& key, std::string&& value, S3Request::Callback&& cb) const;
 
   private:
     const std::string hostName_;

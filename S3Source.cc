@@ -8,7 +8,7 @@ using namespace cce::tf;
 
 S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, unsigned long long iNEvents, S3ConnectionRef conn):
   SharedSourceBase(iNEvents),
-  objPrefix_(iObjPrefix),
+  objPrefix_(std::move(iObjPrefix)),
   verbose_(iVerbose),
   conn_(conn),
   readTime_{std::chrono::microseconds::zero()}
