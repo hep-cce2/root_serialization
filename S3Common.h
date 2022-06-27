@@ -1,6 +1,5 @@
 #if !defined(S3Common_h)
 #define S3Common_h
-
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -27,28 +26,28 @@ class S3Request {
     const Callback callback;
     const std::chrono::milliseconds timeout{1000};
     const int retries{5};
+    const bool async{false};
     std::string buffer;
     Status status;
 
   private:
     S3Request() = delete;
     // constructor for devnull connection
-    S3Request(Type iType, std::string iKey, Status stat):
+    S3Request(Type iType, const std::string& iKey, Status stat):
       type{iType}, key{iKey}, status{stat} {};
     // get constructor
-    S3Request(Type iType, const S3BucketContext* iCtx, std::string iKey, Callback iCb, S3LibWrapper* iOwner):
-      type{iType}, bucketCtx{iCtx}, key{iKey}, callback{iCb}, _owner{iOwner}
+    S3Request(Type iType, const S3BucketContext* iCtx, const std::string& iKey, Callback iCb, bool iAsync):
+      type{iType}, bucketCtx{iCtx}, key{iKey}, callback{iCb}, async{iAsync}
     {
       _timeout = timeout.count();
     };
     // put constructor
-    S3Request(Type iType, const S3BucketContext* iCtx, std::string iKey, Callback iCb, S3LibWrapper* iOwner, std::string&& buf):
-      type{iType}, bucketCtx{iCtx}, key{iKey}, callback{iCb}, _owner{iOwner}, buffer{buf}
+    S3Request(Type iType, const S3BucketContext* iCtx, const std::string& iKey, Callback iCb, bool iAsync, std::string&& buf):
+      type{iType}, bucketCtx{iCtx}, key{iKey}, callback{iCb}, async{iAsync}, buffer{buf}
     {
       _timeout = timeout.count();
     };
 
-    S3LibWrapper *const _owner{nullptr};
     size_t _put_offset{0};
     int _retries_executed{0};
     long _timeout;
@@ -61,7 +60,7 @@ class S3Request {
 
 class S3Connection {
   public:
-    static S3ConnectionRef from_config(std::string filename);
+    static S3ConnectionRef from_config(const std::string& filename);
 
     S3Connection(
         std::string_view iHostName,
@@ -71,8 +70,8 @@ class S3Connection {
         std::string_view iSecurityToken
         );
 
-    void get(const std::string key, S3Request::Callback&& cb);
-    void put(const std::string key, std::string&& value, S3Request::Callback&& cb);
+    void get(const std::string& key, S3Request::Callback&& cb);
+    void put(const std::string& key, std::string&& value, S3Request::Callback&& cb);
 
   private:
     const std::string hostName_;
