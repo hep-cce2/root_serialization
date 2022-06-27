@@ -89,7 +89,7 @@ void S3Outputer::output(
       }
       std::cout << "\n";
     }
-    p->mutable_content()->append(s.blob().begin(), s.blob().end());
+    p->mutable_content()->append(s.blob().data(), s.blob().size());
     p->add_offsets(p->content().size());
     p++; pi++;
   }
