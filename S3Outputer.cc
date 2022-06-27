@@ -170,24 +170,20 @@ void S3Outputer::flushEventStripe(TaskHolder iCallback, bool last) const {
   objstripe::EventStripe stripeOut;
   stripeOut.mutable_events()->Reserve(eventFlushSize_);
   std::swap(currentEventStripe_, stripeOut);
-  // TODO: are we sure writing to dest is threadsafe?
   auto dest = index_.add_packedeventstripes();
-  iCallback.group()->run(
-    [this, dest, stripeOut=std::move(stripeOut), callback=iCallback]() {
-      auto start = std::chrono::high_resolution_clock::now();
-      // TODO: compression
-      stripeOut.SerializeToString(dest);
-      if ( verbose_ >= 2 ) {
-        std::cout << "length of packed EventStripe: " << dest->size() << "\n";
-        std::cout << stripeOut.DebugString() << "\n";
-      }
+  // TODO: compression
+  stripeOut.SerializeToString(dest);
+  if ( verbose_ >= 2 ) {
+    std::cout << "length of packed EventStripe: " << dest->size() << "\n";
+    std::cout << stripeOut.DebugString() << "\n";
+  }
 
-      // TODO: checkpoint only every few event stripes?
-      if ( verbose_ >= 2 ) {
-        std::cout << index_.DebugString() << "\n";
-      }
+  // TODO: checkpoint only every few event stripes?
+  iCallback.group()->run([this, idxcopy=index_, callback=iCallback]() {
+      // shallow copy index_ to ensure validity
+      auto start = std::chrono::high_resolution_clock::now();
       std::string indexOut;
-      index_.SerializeToString(&indexOut);
+      idxcopy.SerializeToString(&indexOut);
       conn_->put(objPrefix_ + "index", std::move(indexOut), [callback=std::move(callback)](S3Request* req) {
           if ( req->status != S3Request::Status::ok ) {
             std::cerr << "failed to write product buffer index" << std::endl;
@@ -195,8 +191,7 @@ void S3Outputer::flushEventStripe(TaskHolder iCallback, bool last) const {
         });
       auto time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start);
       parallelTime_ += time.count();
-    }
-  );
+    });
 }
 
 namespace {
