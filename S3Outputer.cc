@@ -95,7 +95,8 @@ void S3Outputer::printSummary() const {
     "  total serial event stripe flush time at end event: "<<flushTime_.count()<<"us\n"
     "  total per-product serial buffer time at end event: "<<appendTime.count()<<"us\n"
     "  total non-serializer parallel time at end event: "<<parallelTime_.load()<<"us\n"
-    "  total serializer parallel time at end event: "<<serializerTime.count()<<"us\n";
+    "  total serializer parallel time at end event: "<<serializerTime.count()<<"us\n"
+    "  total blocking time in S3Connection: "<<conn_->blockingTime().count()<<"us\n";
 }
 
 void S3Outputer::collateProducts(
@@ -156,7 +157,8 @@ void S3Outputer::appendProductBuffer(
     buf.buffer_.mutable_content()->append(blob);
     buf.buffer_.add_offsets(buf.buffer_.content().size());
   }
-  size_t bufferNevents = buf.buffer_.offsets_size();
+  const size_t bufferNevents = buf.buffer_.offsets_size();
+  const size_t bufferNbytes = buf.buffer_.content().size();
 
   // first flush when we exceed min size and have an even divisor of eventFlushSize_
   // subsequent flush when we reach productFlushSize
@@ -165,7 +167,7 @@ void S3Outputer::appendProductBuffer(
   if (
       (
         (buf.info_->flushsize() == 0)
-        && (buf.buffer_.content().size() > buf.info_->flushminbytes())
+        && (bufferNbytes > buf.info_->flushminbytes())
         && (eventFlushSize_ % bufferNevents == 0)
       )
       || (bufferNevents == buf.info_->flushsize())
@@ -173,13 +175,18 @@ void S3Outputer::appendProductBuffer(
       || (last && bufferNevents > 0)
       )
   {
+    if(verbose_ >= 2) {
+      std::cout << "product buffer for "s + std::string(buf.info_->productname())
+        + " is full ("s + std::to_string(bufferNbytes)
+        + " bytes, "s + std::to_string(bufferNevents) + " events), flushing\n";
+    }
     objstripe::ProductStripe pOut;
     pOut.mutable_offsets()->Reserve(bufferNevents);
-    pOut.mutable_content()->reserve(buf.buffer_.content().size());
+    pOut.mutable_content()->reserve(bufferNbytes);
     pOut.set_globaloffset(buf.buffer_.globaloffset() + bufferNevents);
     std::swap(buf.buffer_, pOut);
     std::string name = buf.prefix_;
-    name += std::to_string(buf.buffer_.globaloffset());
+    name += std::to_string(pOut.globaloffset());
     iCallback.group()->run(
       [this, name=std::move(name), pOut=std::move(pOut), callback=std::move(iCallback)]() {
         std::string finalbuf;
@@ -210,7 +217,6 @@ void S3Outputer::flushEventStripe(const objstripe::EventStripe& stripe, TaskHold
   stripe.SerializeToString(dest);
   if ( verbose_ >= 2 ) {
     std::cout << "length of packed EventStripe: " << dest->size() << "\n";
-    std::cout << stripe.DebugString() << "\n";
   }
 
   // TODO: checkpoint only every few event stripes?

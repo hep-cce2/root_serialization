@@ -72,6 +72,7 @@ class S3Connection {
 
     void get(const std::string& key, S3Request::Callback&& cb) const;
     void put(const std::string& key, std::string&& value, S3Request::Callback&& cb) const;
+    std::chrono::microseconds blockingTime() const { return std::chrono::microseconds(blockingTime_.load()); }
 
   private:
     const std::string hostName_;
@@ -81,6 +82,8 @@ class S3Connection {
     const std::string securityToken_;
     // holds pointers to c_str() of the above
     std::unique_ptr<const S3BucketContext> ctx_;
+
+    mutable std::atomic<std::chrono::microseconds::rep> blockingTime_;
 };
 
 }

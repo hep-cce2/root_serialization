@@ -291,7 +291,8 @@ S3Connection::S3Connection(
   bucketName_(iBucketName),
   accessKeyId_(iAccessKey),
   secretAccessKey_(iSecretKey),
-  securityToken_(iSecurityToken)
+  securityToken_(iSecurityToken),
+  blockingTime_{0}
 {
   if ( hostName_ == "devnull") {
     // magic do-nothing connection
@@ -310,21 +311,27 @@ S3Connection::S3Connection(
 };
 
 void S3Connection::get(const std::string& key, S3Request::Callback&& cb) const {
+  auto start = std::chrono::high_resolution_clock::now();
   if ( ctx_ ) {
     S3LibWrapper::instance().get(ctx_.get(), key, std::move(cb));
   } else if ( cb ) {
     S3Request dummy(S3Request::Type::get, key, S3Request::Status::error);
     cb(&dummy);
   }
+  auto time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start);
+  blockingTime_ += time.count();
 };
 
 void S3Connection::put(const std::string& key, std::string&& value, S3Request::Callback&& cb) const {
+  auto start = std::chrono::high_resolution_clock::now();
   if ( ctx_ ) {
     S3LibWrapper::instance().put(ctx_.get(), key, std::move(value), std::move(cb));
   } else if ( cb ) {
     S3Request dummy(S3Request::Type::put, key, S3Request::Status::ok);
     cb(&dummy);
   }
+  auto time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start);
+  blockingTime_ += time.count();
 };
 
 }
