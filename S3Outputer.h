@@ -18,16 +18,18 @@
 #include "objectstripe.pb.h"
 
 namespace cce::tf {
+
 class S3Outputer : public OutputerBase {
  public:
   S3Outputer(unsigned int iNLanes, std::string objPrefix, int iVerbose, size_t iProductBufferFlush, size_t iEventFlushSize, S3ConnectionRef conn):
     serializers_(iNLanes),
     objPrefix_(objPrefix),
     verbose_(iVerbose),
-    productBufferFlushMinSize_(iProductBufferFlush),
+    productBufferFlushMinBytes_(iProductBufferFlush),
     eventFlushSize_(iEventFlushSize),
-    conn_(conn),
-    serialTime_{std::chrono::microseconds::zero()},
+    conn_(std::move(conn)),
+    collateTime_{std::chrono::microseconds::zero()},
+    flushTime_{std::chrono::microseconds::zero()},
     parallelTime_{0}
   {
     index_.set_eventstripesize(eventFlushSize_);
@@ -37,53 +39,59 @@ class S3Outputer : public OutputerBase {
   }
 
   void setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) final;
-
-  void productReadyAsync(unsigned int iLaneIndex, DataProductRetriever const& iDataProduct, TaskHolder iCallback) const final {
-    assert(iLaneIndex < serializers_.size());
-    auto& laneSerializers = serializers_[iLaneIndex];
-    auto group = iCallback.group();
-    assert(iDataProduct.index() < laneSerializers.size() );
-    laneSerializers[iDataProduct.index()].doWorkAsync(*group, iDataProduct.address(), std::move(iCallback));
-  }
-
-  bool usesProductReadyAsync() const final {return true; }
-
-  void outputAsync(unsigned int iLaneIndex, EventIdentifier const& iEventID, TaskHolder iCallback) const final {
-    auto start = std::chrono::high_resolution_clock::now();
-    // all products
-    queue_.push(*iCallback.group(), [this, iEventID, iLaneIndex, callback=std::move(iCallback)]() mutable {
-        auto start = std::chrono::high_resolution_clock::now();
-        output(iEventID, serializers_[iLaneIndex], std::move(callback));
-        serialTime_ += std::chrono::duration_cast<decltype(serialTime_)>(std::chrono::high_resolution_clock::now() - start);
-      });
-    auto time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start);
-    parallelTime_ += time.count();
-  }
-
+  bool usesProductReadyAsync() const final {return true;}
+  void productReadyAsync(unsigned int iLaneIndex, DataProductRetriever const& iDataProduct, TaskHolder iCallback) const final;
+  void outputAsync(unsigned int iLaneIndex, EventIdentifier const& iEventID, TaskHolder iCallback) const final;
   void printSummary() const final;
 
 private:
-  void output(EventIdentifier const& iEventID, SerializeStrategy const& iSerializers, TaskHolder iCallback) const;
-  void flushProductStripes(TaskHolder iCallback, bool last=false) const;
-  void flushEventStripe(TaskHolder iCallback, bool last=false) const;
+  struct ProductOutputBuffer {
+    ProductOutputBuffer(const std::string& prefix, objstripe::ProductInfo* info) :
+      prefix_{prefix}, info_{info} {};
 
-  mutable std::vector<SerializeStrategy> serializers_;
-  mutable SerialTaskQueue queue_;
+    const std::string prefix_;
+    objstripe::ProductInfo* info_; // owned by index_
+    objstripe::ProductStripe buffer_;
+    SerialTaskQueue appendQueue_;
+    std::chrono::microseconds appendTime_{0};
+  };
+
+  // Plan:
+  // productReadyAsync() is threadsafe because serializers_ is one per lane
+  // outputAsync puts collateProducts() in collateQueue_
+  // collateProducts() appends a new objstripe::Event to currentEventStripe_ and if time to flush
+  // it creates a TaskHolder that appends flushEventStripe() to flushQueue_
+  // then collate() calls appendProductBuffer() with the above TaskHolder as callback (or original callback)
+  // printSummary() takes care of the tails by setting last=true in the calls
+  void collateProducts(EventIdentifier const& iEventID, SerializeStrategy const& iSerializers, TaskHolder iCallback) const;
+  void appendProductBuffer(ProductOutputBuffer& buf, const std::string_view blob, TaskHolder iCallback, bool last=false) const;
+  void flushEventStripe(const objstripe::EventStripe& stripe, TaskHolder iCallback, bool last=false) const;
 
   // configuration options
-  int verbose_;
-  std::string objPrefix_;
-  size_t productBufferFlushMinSize_;
-  size_t eventFlushSize_;
+  const int verbose_;
+  const std::string objPrefix_;
+  const size_t productBufferFlushMinBytes_;
+  const size_t eventFlushSize_;
   S3ConnectionRef conn_;
 
-  // mutated only by methods called in queue_
-  mutable objstripe::ObjectStripeIndex index_;
-  mutable objstripe::EventStripe currentEventStripe_;
-  mutable std::vector<objstripe::ProductStripe> currentProductStripes_;
-  mutable size_t eventGlobalOffset_{0};
+  // only modified by productReadyAsync()
+  mutable std::vector<SerializeStrategy> serializers_;
 
-  mutable std::chrono::microseconds serialTime_;
+  // only modified in collateProducts()
+  mutable SerialTaskQueue collateQueue_;
+  mutable size_t eventGlobalOffset_{0};
+  mutable objstripe::EventStripe currentEventStripe_;
+  mutable std::chrono::microseconds collateTime_;
+
+  // only modified in appendProductBuffer()
+  mutable std::vector<ProductOutputBuffer> buffers_;
+
+  // only modified in flushEventStripe()
+  // (for index_'s ProductInfos, appendProductBuffer() has finished before we access)
+  mutable SerialTaskQueue flushQueue_;
+  mutable objstripe::ObjectStripeIndex index_;
+  mutable std::chrono::microseconds flushTime_;
+
   mutable std::atomic<std::chrono::microseconds::rep> parallelTime_;
 };
 }

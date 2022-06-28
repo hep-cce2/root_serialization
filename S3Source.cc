@@ -89,6 +89,7 @@ std::pair<const char*, size_t> DelayedProductStripeRetriever::bufferAt(size_t gl
         else { throw std::runtime_error("Could not retrieve ProductStripe for key " + name_); }
       });
     });
+  assert(globalOffset_ == data_.globaloffset());
   assert(globalOffset_ <= globalEventIndex);
   size_t offset = globalEventIndex - globalOffset_;
   assert(offset < data_.offsets_size());
@@ -157,15 +158,6 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
             while ( it_stripe != stripes.cend() ) {
               auto start = std::chrono::high_resolution_clock::now();
               auto [buf, len] = (*it_stripe)->bufferAt(globalEventIndex);
-              if ( verbose_ >= 3 ) {
-                std::cout << "got buffer " << uint64_t(buf) << " len " << len << "\n";
-                for (size_t i=0; i<len; ++i) {
-                  const char c = buf[i];
-                  if ( isprint(c) ) std::cout << c;
-                  else std::cout << "\\x" << std::hex << (int) c << std::dec;
-                }
-                std::cout << "\n";
-              }
               auto split = std::chrono::high_resolution_clock::now();
               laneInfo.readTime_ += std::chrono::duration_cast<decltype(laneInfo.readTime_)>(split - start);
               auto readSize = (*it_deserialize).deserialize(buf, len, *it_product->address());
