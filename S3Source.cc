@@ -3,8 +3,86 @@
 #include "SourceFactory.h"
 #include "Deserializer.h"
 #include "UnrolledDeserializer.h"
+#include "FunctorTask.h"
 
 using namespace cce::tf;
+
+void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
+  auto this_state{State::unretrieved};
+  if ( state_.compare_exchange_strong(this_state, State::retrieving) ) {
+    conn_->get(name_, [this, callback=std::move(callback)](S3Request* req) mutable {
+        if ( req->status == S3Request::Status::ok ) {
+          if ( not data_.ParseFromString(req->buffer) ) {
+            throw std::runtime_error("Could not deserialize ProductStripe for key " + name_);
+          }
+          state_ = State::retrieved;
+          callback.doneWaiting();
+          for(auto& w : waiters_) w.doneWaiting();
+        }
+        else { throw std::runtime_error("Could not retrieve ProductStripe for key " + name_); }
+      });
+  } else if (this_state == State::retrieved ) {
+    return;
+  } else {
+    // TODO: check again if not State::retrieved?
+    waiters_.emplace_back(std::move(callback));
+  }
+}
+
+std::string_view DelayedProductStripeRetriever::bufferAt(size_t globalEventIndex) const {
+  assert(state_ == State::retrieved);
+  assert(globalOffset_ == data_.globaloffset());
+  assert(globalOffset_ <= globalEventIndex);
+  size_t offset = globalEventIndex - globalOffset_;
+  assert(offset < data_.offsets_size());
+  size_t bstart = (offset == 0) ? 0 : data_.offsets(offset-1);
+  size_t bstop = data_.offsets(offset);
+  return {&data_.content()[bstart], bstop - bstart};
+}
+
+S3DelayedRetriever::S3DelayedRetriever(objstripe::ObjectStripeIndex const& index, DeserializeStrategy strategy):
+  deserializers_{std::move(strategy)}
+{
+  dataProducts_.reserve(index.products_size());
+  deserializers_.reserve(index.products_size());
+  dataBuffers_.resize(index.products_size(), nullptr);
+  stripes_.resize(index.products_size());
+  size_t i{0};
+  for(auto const& pi : index.products()) {
+    TClass* cls = TClass::GetClass(pi.producttype().c_str());
+    if ( cls == nullptr ) {
+      throw std::runtime_error("No TClass reflection available for " + pi.productname());
+    }
+    dataBuffers_[i] = cls->New();
+    dataProducts_.emplace_back(i, &dataBuffers_[i], pi.productname(), cls, this);
+    deserializers_.emplace_back(cls);
+    ++i;
+  }
+}
+
+S3DelayedRetriever::~S3DelayedRetriever() {
+  auto it = dataProducts_.begin();
+  for(void * b: dataBuffers_) {
+    it->classType()->Destructor(b);
+    ++it;
+  }
+}
+
+void S3DelayedRetriever::getAsync(DataProductRetriever& product, int index, TaskHolder callback) {
+  assert(&product == &dataProducts_[index]);
+  assert(product.address() == &dataBuffers_[index]);
+  assert(stripes_[index]);
+  TaskHolder fetchCallback(*callback.group(), make_functor_task(
+      [this, index, callback=std::move(callback)]() mutable {
+        auto start = std::chrono::high_resolution_clock::now();
+        auto buf = stripes_[index]->bufferAt(globalEventIndex_);
+        auto readSize = deserializers_[index].deserialize(buf.data(), buf.size(), *dataProducts_[index].address());
+        dataProducts_[index].setSize(readSize);
+        deserializeTime_ += std::chrono::duration_cast<decltype(deserializeTime_)>(std::chrono::high_resolution_clock::now() - start);
+      }
+    ));
+  stripes_[index]->fetch(std::move(fetchCallback));
+}
 
 S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, unsigned long long iNEvents, S3ConnectionRef conn):
   SharedSourceBase(iNEvents),
@@ -34,7 +112,7 @@ S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, u
 
   currentProductStripes_.resize(index_.products_size());
  
-  laneInfos_.reserve(iNLanes);
+  laneRetrievers_.reserve(iNLanes);
   for(unsigned int i = 0; i< iNLanes; ++i) {
     DeserializeStrategy strategy;
     switch(index_.serializestrategy()) {
@@ -45,69 +123,22 @@ S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, u
         strategy = DeserializeStrategy::make<DeserializeProxy<UnrolledDeserializer>>();
         break;
     }
-    laneInfos_.emplace_back(index_, std::move(strategy));
+    laneRetrievers_.emplace_back(index_, std::move(strategy));
   }
 
   readTime_ += std::chrono::duration_cast<decltype(readTime_)>(std::chrono::high_resolution_clock::now() - start);
 }
 
-S3Source::LaneInfo::LaneInfo(objstripe::ObjectStripeIndex const& index, DeserializeStrategy deserialize):
-  deserializers_{std::move(deserialize)}
-{
-  dataProducts_.reserve(index.products_size());
-  dataBuffers_.resize(index.products_size(), nullptr);
-  deserializers_.reserve(index.products_size());
-  size_t i{0};
-  for(auto const& pi : index.products()) {
-    TClass* cls = TClass::GetClass(pi.producttype().c_str());
-    if ( cls == nullptr ) {
-      throw std::runtime_error("No TClass reflection available for " + pi.productname());
-    }
-    dataBuffers_[i] = cls->New();
-    dataProducts_.emplace_back(i, &dataBuffers_[i], pi.productname(), cls, &delayedRetriever_);
-    deserializers_.emplace_back(cls);
-    ++i;
-  }
-}
-
-S3Source::LaneInfo::~LaneInfo() {
-  auto it = dataProducts_.begin();
-  for( void * b: dataBuffers_) {
-    it->classType()->Destructor(b);
-    ++it;
-  }
-}
-
-std::pair<const char*, size_t> DelayedProductStripeRetriever::bufferAt(size_t globalEventIndex) const {
-  std::call_once(flag_, [this](){
-    conn_->get(name_, [this](S3Request* req) {
-        if ( req->status == S3Request::Status::ok ) {
-          if ( not data_.ParseFromString(req->buffer) ) {
-            throw std::runtime_error("Could not deserialize ProductStripe for key " + name_);
-          }
-        }
-        else { throw std::runtime_error("Could not retrieve ProductStripe for key " + name_); }
-      });
-    });
-  assert(globalOffset_ == data_.globaloffset());
-  assert(globalOffset_ <= globalEventIndex);
-  size_t offset = globalEventIndex - globalOffset_;
-  assert(offset < data_.offsets_size());
-  size_t bstart = (offset == 0) ? 0 : data_.offsets(offset-1);
-  size_t bstop = data_.offsets(offset);
-  return {&data_.content()[bstart], bstop - bstart};
-}
-
 size_t S3Source::numberOfDataProducts() const {
-  return laneInfos_[0].dataProducts_.size();
+  return index_.products_size();
 }
 
 std::vector<DataProductRetriever>& S3Source::dataProducts(unsigned int iLane, long iEventIndex) {
-  return laneInfos_[iLane].dataProducts_;
+  return laneRetrievers_[iLane].dataProducts();
 }
 
 EventIdentifier S3Source::eventIdentifier(unsigned int iLane, long iEventIndex) {
-  return laneInfos_[iLane].eventID_;
+  return laneRetrievers_[iLane].event();
 }
 
 void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTaskHolder iTask) {
@@ -127,48 +158,32 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
         }
         const auto event = currentEventStripe_.events(nextEventInStripe_);
         if ( verbose_ >= 2 ) std::cout << event.DebugString() << "\n";
+        auto& retriever = laneRetrievers_[iLane];
         size_t globalEventIndex = event.offset();
-        laneInfos_[iLane].eventID_.run = event.run();
-        laneInfos_[iLane].eventID_.lumi = event.lumi();
-        laneInfos_[iLane].eventID_.event = event.event();
-        auto stripes = std::vector<std::shared_ptr<const DelayedProductStripeRetriever>>();
-        stripes.reserve(currentProductStripes_.size());
+
+        auto productinfo = std::begin(index_.products());
         size_t i{0};
         for (auto& ps : currentProductStripes_) {
-          const auto& productinfo = index_.products(i++);
+          const auto& productinfo = index_.products(i);
           if ( nextEventInStripe_ % productinfo.flushsize() == 0 ) {
             auto new_ps = std::make_shared<const DelayedProductStripeRetriever>(
                 conn_,
                 objPrefix_ + productinfo.productname() + std::to_string(globalEventIndex),
                 globalEventIndex
                 );
+            if ( verbose_ >= 2 ) {
+              std::cout << "setting lane " << iLane << "to read stripe " <<
+                objPrefix_ + productinfo.productname() + std::to_string(globalEventIndex) << "\n";
+            }
             std::swap(ps, new_ps);
           }
-          stripes.push_back(ps);
+          retriever.setStripe(i, ps);
+          i++;
         }
 
+        retriever.setEvent(globalEventIndex, {event.run(), event.lumi(), event.event()});
+        optTask.releaseToTaskHolder();
         ++nextEventInStripe_;
-        auto group = optTask.group();
-        group->run([this, task=optTask.releaseToTaskHolder(), iLane, globalEventIndex, stripes=std::move(stripes)]() {
-            auto& laneInfo = this->laneInfos_[iLane];
-
-            auto it_stripe = stripes.cbegin();
-            auto it_deserialize = laneInfo.deserializers_.begin();
-            auto it_product = laneInfo.dataProducts_.begin();
-            while ( it_stripe != stripes.cend() ) {
-              auto start = std::chrono::high_resolution_clock::now();
-              auto [buf, len] = (*it_stripe)->bufferAt(globalEventIndex);
-              auto split = std::chrono::high_resolution_clock::now();
-              laneInfo.readTime_ += std::chrono::duration_cast<decltype(laneInfo.readTime_)>(split - start);
-              auto readSize = (*it_deserialize).deserialize(buf, len, *it_product->address());
-              if ( verbose_ >= 3 ) std::cout << "read " << readSize << " bytes\n";
-              it_product->setSize(readSize);
-              ++it_stripe;
-              ++it_deserialize;
-              ++it_product;
-              laneInfo.deserializeTime_ += std::chrono::duration_cast<decltype(laneInfo.deserializeTime_)>(std::chrono::high_resolution_clock::now() - split);
-            }
-          });
       }
       readTime_ +=std::chrono::duration_cast<decltype(readTime_)>(std::chrono::high_resolution_clock::now() - start);
     });
@@ -176,36 +191,28 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
 
 void S3Source::printSummary() const {
   std::cout <<"\nSource:\n"
-    "   serial read time: "<<serialReadTime().count()<<"us\n"
-    "   parallel read time: "<<parallelReadTime().count()<<"us\n"
-    "   decompress time: "<<decompressTime().count()<<"us\n"
-    "   deserialize time: "<<deserializeTime().count()<<"us\n"<<std::endl;
+    "  serial read time: "<<serialReadTime().count()<<"us\n"
+    "  decompress time: "<<decompressTime().count()<<"us\n"
+    "  deserialize time: "<<deserializeTime().count()<<"us\n"
+    "  total blocking time in S3Connection: "<<conn_->blockingTime().count()<<"us\n";
 };
 
 std::chrono::microseconds S3Source::serialReadTime() const {
   return readTime_;
 }
 
-std::chrono::microseconds S3Source::parallelReadTime() const {
-  auto time = std::chrono::microseconds::zero();
-  for(auto const& l : laneInfos_) {
-    time += l.readTime_;
-  }
-  return time;
-}
-
 std::chrono::microseconds S3Source::decompressTime() const {
   auto time = std::chrono::microseconds::zero();
-  for(auto const& l : laneInfos_) {
-    time += l.decompressTime_;
+  for(auto const& l : laneRetrievers_) {
+    time += l.decompressTime();
   }
   return time;
 }
 
 std::chrono::microseconds S3Source::deserializeTime() const {
   auto time = std::chrono::microseconds::zero();
-  for(auto const& l : laneInfos_) {
-    time += l.deserializeTime_;
+  for(auto const& l : laneRetrievers_) {
+    time += l.deserializeTime();
   }
   return time;
 }
