@@ -13,6 +13,7 @@
 #include "DataProductRetriever.h"
 #include "DelayedProductRetriever.h"
 #include "SerialTaskQueue.h"
+#include "WaitingTaskList.h"
 #include "DeserializeStrategy.h"
 #include "S3Common.h"
 #include "objectstripe.pb.h"
@@ -35,7 +36,7 @@ class DelayedProductStripeRetriever {
 
     enum class State {unretrieved, retrieving, retrieved};
     mutable std::atomic<State> state_;
-    mutable tbb::concurrent_vector<TaskHolder> waiters_{};
+    mutable WaitingTaskList waiters_{};
     mutable objstripe::ProductStripe data_{};
     mutable std::vector<size_t> offsets_{};
     mutable std::string content_{};

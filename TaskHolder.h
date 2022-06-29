@@ -8,6 +8,8 @@
 namespace cce::tf {
 class TaskHolder {
 public:
+  friend class WaitingTaskList;
+
   TaskHolder(): group_{nullptr}, task_{nullptr} {}
   TaskHolder(tbb::task_group& iGroup, std::unique_ptr<TaskBase> iTask): 
     group_{&iGroup}, task_{iTask.release()} {
@@ -66,6 +68,12 @@ public:
     }
   }
 private:
+  TaskBase* release_no_decrement() {
+    auto t = task_;
+    task_ = nullptr;
+    return t;
+  }
+
   tbb::task_group* group_;
   TaskBase* task_;
 };

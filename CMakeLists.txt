@@ -84,6 +84,7 @@ add_executable(threaded_io_test
   outputerFactoryGenerator.cc
   WaiterFactory.cc
   waiterFactoryGenerator.cc
+  WaitingTaskList.cc
   ScaleWaiter.cc
   EventSleepWaiter.cc
   EventUnevenSleepWaiter.cc

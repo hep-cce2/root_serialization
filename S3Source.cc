@@ -64,15 +64,14 @@ void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
           decompressTime_ = std::chrono::duration_cast<decltype(decompressTime_)>(std::chrono::high_resolution_clock::now() - start);
           state_ = State::retrieved;
           callback.doneWaiting();
-          for(auto& w : waiters_) w.doneWaiting();
+          waiters_.doneWaiting();
         }
         else { throw std::runtime_error("Could not retrieve ProductStripe for key " + name_); }
       });
   } else if (this_state == State::retrieved ) {
     return;
   } else {
-    // TODO: check again if not State::retrieved?
-    waiters_.emplace_back(std::move(callback));
+    waiters_.add(std::move(callback));
   }
 }
 
