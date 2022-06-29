@@ -4,7 +4,94 @@
 #include "UnrolledSerializerWrapper.h"
 #include "FunctorTask.h"
 
+#if ZSTD_VERSION_NUMBER < (1*100*100 + 3*100)
+#error("zstd is too old")
+#endif
+
 using namespace cce::tf;
+
+StreamCompressor::StreamCompressor(const objstripe::Compression& setting):
+  setting_{setting}
+{
+  switch ( setting_.type() ) {
+    case objstripe::CompressionType::kNone:
+      break;
+    case objstripe::CompressionType::kZSTD:
+      zstd_.reset(ZSTD_createCStream());
+      ZSTD_CCtx_setParameter(zstd_.get(), ZSTD_c_compressionLevel, setting_.level());
+      break;
+  }
+}
+
+namespace {
+size_t zstd_compress(ZSTD_CCtx* ctx, const std::string_view blob, std::string& out, bool flush) {
+  size_t tail{out.size()};
+  if ( out.capacity() < ZSTD_CStreamOutSize() ) out.resize(ZSTD_CStreamOutSize());
+  else out.resize(out.capacity());
+  ZSTD_outBuffer_s obuf{.dst=out.data(), .size=out.size(), .pos=tail};
+
+  size_t status;
+  if ( flush ) {
+    ZSTD_inBuffer_s ibuf{.src=nullptr, .size=0, .pos=0};
+    while ( status != 0 ) {
+      status = ZSTD_compressStream2(ctx, &obuf, &ibuf, ZSTD_e_end);
+      if ( ZSTD_isError(status) ) {
+        std::cerr <<"ERROR in compression " << ZSTD_getErrorName(status) << std::endl;
+      }
+      if ( obuf.pos == obuf.size ) {
+        size_t new_size = obuf.size * 2;
+        out.resize(new_size);
+        obuf.dst = out.data();
+        obuf.size = new_size;
+      }
+    }
+  } else {
+    ZSTD_inBuffer_s ibuf{.src=blob.data(), .size=blob.size(), .pos=0};
+    while ( ibuf.pos < ibuf.size ) {
+      status = ZSTD_compressStream2(ctx, &obuf, &ibuf, ZSTD_e_continue);
+      if ( ZSTD_isError(status) ) {
+        std::cerr <<"ERROR in compression " << ZSTD_getErrorName(status) << std::endl;
+      }
+      if ( obuf.pos == obuf.size ) {
+        size_t new_size = obuf.size * 2;
+        out.resize(new_size);
+        obuf.dst = out.data();
+        obuf.size = new_size;
+      }
+    }
+  }
+  out.resize(obuf.pos);
+  // we are supposed to get a hint from ZSTD of the bytes left in internal buffers of CCtx
+  // but it doesn't appear to be nonzero
+  return status;
+}
+}
+
+size_t StreamCompressor::write(const std::string_view blob, std::string& out) {
+  switch ( setting_.type() ) {
+    case objstripe::CompressionType::kNone:
+      out.append(blob);
+      return 0;
+    case objstripe::CompressionType::kZSTD:
+      return ::zstd_compress(zstd_.get(), blob, out, false);
+    default:
+      assert(false);
+      return 0;
+  }
+}
+
+void StreamCompressor::flush(std::string& out) {
+  switch ( setting_.type() ) {
+    case objstripe::CompressionType::kNone:
+      return;
+    case objstripe::CompressionType::kZSTD:
+      ::zstd_compress(zstd_.get(), {}, out, true);
+      return;
+    default:
+      assert(false);
+      return;
+  }
+}
 
 void S3Outputer::setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) {
   auto& s = serializers_[iLaneIndex];
@@ -31,7 +118,8 @@ void S3Outputer::setupForLane(unsigned int iLaneIndex, std::vector<DataProductRe
       prod->set_producttype(ss.className());
       prod->set_flushsize(0);
       prod->set_flushminbytes(productBufferFlushMinBytes_);
-      buffers_.emplace_back(objPrefix_ + prod->productname(), prod);
+      // TODO: choose compression setting based on properties of ss?
+      buffers_.emplace_back(objPrefix_ + prod->productname(), prod, defaultCompression_);
     }
   }
   // all lanes see same products? if not we'll need a map
@@ -153,12 +241,19 @@ void S3Outputer::appendProductBuffer(
   using namespace std::string_literals;
   auto start = std::chrono::high_resolution_clock::now();
 
+  size_t pendingbytes{0};
   if ( not last ) {
-    buf.buffer_.mutable_content()->append(blob);
-    buf.buffer_.add_offsets(buf.buffer_.content().size());
+    buf.stripe_.add_counts(blob.size());
+    pendingbytes = buf.compressor_.write(blob, *buf.stripe_.mutable_content());
   }
-  const size_t bufferNevents = buf.buffer_.offsets_size();
-  const size_t bufferNbytes = buf.buffer_.content().size();
+  const size_t bufferNevents = buf.stripe_.counts_size();
+  size_t bufferNbytes = buf.stripe_.content().size();
+  if ( pendingbytes > 0 ) {
+    std::cout << "product buffer for "s + std::string(buf.info_->productname())
+      + " put " + std::to_string(blob.size()) + " bytes in"
+      " and has "s + std::to_string(bufferNbytes) + " bytes out"
+      " and "s + std::to_string(pendingbytes) + " bytes pending\n";
+  }
 
   // first flush when we exceed min size and have an even divisor of eventFlushSize_
   // subsequent flush when we reach productFlushSize
@@ -175,16 +270,21 @@ void S3Outputer::appendProductBuffer(
       || (last && bufferNevents > 0)
       )
   {
+    buf.compressor_.flush(*buf.stripe_.mutable_content());
+    bufferNbytes = buf.stripe_.content().size();
     if(verbose_ >= 2) {
       std::cout << "product buffer for "s + std::string(buf.info_->productname())
         + " is full ("s + std::to_string(bufferNbytes)
         + " bytes, "s + std::to_string(bufferNevents) + " events), flushing\n";
     }
     objstripe::ProductStripe pOut;
-    pOut.mutable_offsets()->Reserve(bufferNevents);
+    pOut.mutable_counts()->Reserve(bufferNevents);
     pOut.mutable_content()->reserve(bufferNbytes);
-    pOut.set_globaloffset(buf.buffer_.globaloffset() + bufferNevents);
-    std::swap(buf.buffer_, pOut);
+    pOut.set_globaloffset(buf.stripe_.globaloffset() + bufferNevents);
+
+    std::swap(buf.stripe_, pOut);
+
+    pOut.set_allocated_compression(new objstripe::Compression(buf.compressor_.getCompression()));
     std::string name = buf.prefix_;
     name += std::to_string(pOut.globaloffset());
     iCallback.group()->run(
@@ -245,8 +345,8 @@ class Maker : public OutputerMakerBase {
         std::cerr << "no object prefix given for S3Outputer\n";
         return {};
       }
-      auto productFlush = params.get<size_t>("productFlush", 1024*512);
-      auto eventFlush = params.get<size_t>("eventFlush", 24);
+      auto productFlush = params.get<size_t>("productFlush", 1024*128);
+      auto eventFlush = params.get<size_t>("eventFlush", 144);
       auto connfile = params.get<std::string>("conn");
       if(not connfile) {
         std::cerr <<"no connection configuration file name given for S3Outputer\n";

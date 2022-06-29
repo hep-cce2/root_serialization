@@ -1,4 +1,5 @@
 #include <iostream>
+#include "zstd.h"
 #include "S3Source.h"
 #include "SourceFactory.h"
 #include "Deserializer.h"
@@ -7,14 +8,60 @@
 
 using namespace cce::tf;
 
+namespace {
+struct ZSTD_ContextHolder {
+  ZSTD_ContextHolder() { ctx = ZSTD_createDCtx(); }
+  ~ZSTD_ContextHolder() { ZSTD_freeDCtx(ctx); }
+  ZSTD_DCtx* ctx;
+};
+
+size_t zstd_perthread_decompress(void* dst, size_t dstCapacity, const void* src, size_t compressedSize) {
+  static thread_local ZSTD_ContextHolder holder{};
+  return ZSTD_decompressDCtx(holder.ctx, dst, dstCapacity, src, compressedSize);
+}
+
+void decompress_stripe(const objstripe::Compression& setting, std::string& blob, std::string& out, size_t dSize) {
+  switch ( setting.type() ) {
+    case objstripe::CompressionType::kNone:
+      std::swap(blob, out);
+      return;
+    case objstripe::CompressionType::kZSTD:
+      out.resize(dSize);
+      size_t status = ZSTD_decompress(out.data(), out.size(), blob.data(), blob.size());
+      // size_t status = zstd_perthread_decompress(out.data(), out.size(), blob.data(), blob.size());
+      if ( ZSTD_isError(status) ) {
+        std::cerr <<"ERROR in decompression " << ZSTD_getErrorName(status) << std::endl;
+      }
+      if (status < dSize) {
+        std::cerr <<"ERROR in decompression, expected " << dSize << " bytes but only got " << status << std::endl;
+      }
+      blob.clear();
+      blob.shrink_to_fit();
+      return;
+  }
+}
+}
+
 void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
   auto this_state{State::unretrieved};
   if ( state_.compare_exchange_strong(this_state, State::retrieving) ) {
     conn_->get(name_, [this, callback=std::move(callback)](S3Request* req) mutable {
         if ( req->status == S3Request::Status::ok ) {
+          auto start = std::chrono::high_resolution_clock::now();
           if ( not data_.ParseFromString(req->buffer) ) {
             throw std::runtime_error("Could not deserialize ProductStripe for key " + name_);
           }
+          offsets_.reserve(data_.counts_size() + 1);
+          size_t nbytes{0};
+          offsets_.push_back(nbytes);
+          for (const auto& c : data_.counts()) {
+            nbytes += c;
+            offsets_.push_back(nbytes);
+          }
+          assert(offsets_.size() == data_.counts_size() + 1);
+          ::decompress_stripe(data_.compression(), *data_.mutable_content(), content_, nbytes);
+          assert(nbytes == content_.size());
+          decompressTime_ = std::chrono::duration_cast<decltype(decompressTime_)>(std::chrono::high_resolution_clock::now() - start);
           state_ = State::retrieved;
           callback.doneWaiting();
           for(auto& w : waiters_) w.doneWaiting();
@@ -33,11 +80,11 @@ std::string_view DelayedProductStripeRetriever::bufferAt(size_t globalEventIndex
   assert(state_ == State::retrieved);
   assert(globalOffset_ == data_.globaloffset());
   assert(globalOffset_ <= globalEventIndex);
-  size_t offset = globalEventIndex - globalOffset_;
-  assert(offset < data_.offsets_size());
-  size_t bstart = (offset == 0) ? 0 : data_.offsets(offset-1);
-  size_t bstop = data_.offsets(offset);
-  return {&data_.content()[bstart], bstop - bstart};
+  size_t iOffset = globalEventIndex - globalOffset_;
+  assert(iOffset < data_.counts_size());
+  size_t bstart = offsets_[iOffset];
+  size_t bstop = offsets_[iOffset+1];
+  return {&content_[bstart], bstop - bstart};
 }
 
 S3DelayedRetriever::S3DelayedRetriever(objstripe::ObjectStripeIndex const& index, DeserializeStrategy strategy):
@@ -176,6 +223,8 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
                 objPrefix_ + productinfo.productname() + std::to_string(globalEventIndex) << "\n";
             }
             std::swap(ps, new_ps);
+            // record decompress time of old stripe
+            if ( new_ps ) decompressTime_ += new_ps->decompressTime();
           }
           retriever.setStripe(i, ps);
           i++;
@@ -202,11 +251,7 @@ std::chrono::microseconds S3Source::serialReadTime() const {
 }
 
 std::chrono::microseconds S3Source::decompressTime() const {
-  auto time = std::chrono::microseconds::zero();
-  for(auto const& l : laneRetrievers_) {
-    time += l.decompressTime();
-  }
-  return time;
+  return decompressTime_;
 }
 
 std::chrono::microseconds S3Source::deserializeTime() const {

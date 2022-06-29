@@ -6,6 +6,7 @@
 #include <iostream>
 #include <cassert>
 
+#include "zstd.h"
 #include "tbb/task_group.h"
 
 #include "OutputerBase.h"
@@ -18,6 +19,20 @@
 #include "objectstripe.pb.h"
 
 namespace cce::tf {
+
+class StreamCompressor {
+  public:
+    StreamCompressor(const objstripe::Compression& setting);
+    const objstripe::Compression& getCompression() const { return setting_; }
+    size_t write(const std::string_view blob, std::string& out);
+    void flush(std::string& out);
+
+  private:
+    objstripe::Compression setting_;
+
+    struct ZSTDDeleter { void operator()(ZSTD_CStream* s) const {ZSTD_freeCStream(s);} };
+    std::unique_ptr<ZSTD_CStream, ZSTDDeleter> zstd_;
+};
 
 class S3Outputer : public OutputerBase {
  public:
@@ -33,9 +48,12 @@ class S3Outputer : public OutputerBase {
     parallelTime_{0}
   {
     index_.set_eventstripesize(eventFlushSize_);
+    currentEventStripe_.mutable_events()->Reserve(eventFlushSize_);
+
     // TODO: make configurable
     index_.set_serializestrategy(objstripe::SerializeStrategy::kRoot);
-    currentEventStripe_.mutable_events()->Reserve(eventFlushSize_);
+    defaultCompression_.set_type(objstripe::CompressionType::kZSTD);
+    defaultCompression_.set_level(4);
   }
 
   void setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) final;
@@ -46,13 +64,14 @@ class S3Outputer : public OutputerBase {
 
 private:
   struct ProductOutputBuffer {
-    ProductOutputBuffer(const std::string& prefix, objstripe::ProductInfo* info) :
-      prefix_{prefix}, info_{info} {};
+    ProductOutputBuffer(const std::string& prefix, objstripe::ProductInfo* info, const objstripe::Compression& comp) :
+      prefix_{prefix}, info_{info}, compressor_{comp} {};
 
     const std::string prefix_;
     objstripe::ProductInfo* info_; // owned by index_
-    objstripe::ProductStripe buffer_;
-    SerialTaskQueue appendQueue_;
+    StreamCompressor compressor_;
+    objstripe::ProductStripe stripe_{};
+    SerialTaskQueue appendQueue_{};
     std::chrono::microseconds appendTime_{0};
   };
 
@@ -73,6 +92,7 @@ private:
   const size_t productBufferFlushMinBytes_;
   const size_t eventFlushSize_;
   S3ConnectionRef conn_;
+  objstripe::Compression defaultCompression_{};
 
   // only modified by productReadyAsync()
   mutable std::vector<SerializeStrategy> serializers_;
@@ -80,7 +100,7 @@ private:
   // only modified in collateProducts()
   mutable SerialTaskQueue collateQueue_;
   mutable size_t eventGlobalOffset_{0};
-  mutable objstripe::EventStripe currentEventStripe_;
+  mutable objstripe::EventStripe currentEventStripe_{};
   mutable std::chrono::microseconds collateTime_;
 
   // only modified in appendProductBuffer()

@@ -7,6 +7,17 @@ enum SerializeStrategy {
   kRootUnrolled = 1;
 }
 
+enum CompressionType {
+  kNone = 0;
+  kZSTD = 1;
+}
+
+message Compression {
+  optional CompressionType type = 1;
+  optional uint32 level = 2;
+  optional string dictionaryPath = 3;
+}
+
 message ProductInfo {
   optional string productName = 1;
   optional string productType = 2;
@@ -35,7 +46,8 @@ message EventStripe {
 }
 
 message ProductStripe {
-  repeated uint32 offsets = 1 [packed = true];
+  repeated uint32 counts = 1 [packed = true];
   optional bytes content = 2;
   optional uint64 globalOffset = 3;
+  optional Compression compression = 4;
 }

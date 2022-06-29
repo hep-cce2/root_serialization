@@ -26,6 +26,7 @@ class DelayedProductStripeRetriever {
     void fetch(TaskHolder&& callback) const;
     std::string_view bufferAt(size_t globalEventIndex) const;
     ~DelayedProductStripeRetriever() {};
+    std::chrono::microseconds decompressTime() const { return decompressTime_; }
 
   private:
     S3ConnectionRef conn_;
@@ -34,8 +35,11 @@ class DelayedProductStripeRetriever {
 
     enum class State {unretrieved, retrieving, retrieved};
     mutable std::atomic<State> state_;
-    mutable tbb::concurrent_vector<TaskHolder> waiters_;
-    mutable objstripe::ProductStripe data_;
+    mutable tbb::concurrent_vector<TaskHolder> waiters_{};
+    mutable objstripe::ProductStripe data_{};
+    mutable std::vector<size_t> offsets_{};
+    mutable std::string content_{};
+    mutable std::chrono::microseconds decompressTime_{0};
 };
 
 
@@ -52,7 +56,6 @@ class S3DelayedRetriever : public DelayedProductRetriever {
     EventIdentifier event() const { return eventID_; }
     void setEvent(size_t globalEventIndex, EventIdentifier&& ev) { globalEventIndex_ = globalEventIndex; eventID_ = ev; }
 
-    std::chrono::microseconds decompressTime() const { return decompressTime_; }
     std::chrono::microseconds deserializeTime() const { return deserializeTime_; }
 
     void setStripe(size_t index, const std::shared_ptr<const DelayedProductStripeRetriever>& ptr) { stripes_[index] = ptr; }
@@ -68,7 +71,6 @@ class S3DelayedRetriever : public DelayedProductRetriever {
     std::vector<void*> dataBuffers_;
     DeserializeStrategy deserializers_;
     std::vector<std::shared_ptr<const DelayedProductStripeRetriever>> stripes_;
-    std::chrono::microseconds decompressTime_{0};
     std::chrono::microseconds deserializeTime_{0};
 };
 
@@ -107,6 +109,7 @@ class S3Source : public SharedSourceBase {
     std::vector<std::shared_ptr<const DelayedProductStripeRetriever>> currentProductStripes_;
     std::vector<S3DelayedRetriever> laneRetrievers_;
     std::chrono::microseconds readTime_;
+    std::chrono::microseconds decompressTime_{0};
 };
 }
 
