@@ -10,14 +10,13 @@
 #include "SharedSourceBase.h"
 #include "OutputerBase.h"
 #include "WaiterBase.h"
-#include "AtomicRefCounter.h"
 
 namespace cce::tf {
 class Lane {
 public:
   Lane(unsigned int iIndex, SharedSourceBase* iSource, WaiterBase const* iWaiter);
 
-  void processEventsAsync(std::atomic<long>& index, tbb::task_group& group, const OutputerBase& outputer, AtomicRefCounter);
+  void processEventsAsync(std::atomic<long>& index, tbb::task_group& group, const OutputerBase& outputer, TaskHolder finalTask);
 
   void setVerbose(bool iSet) { verbose_ = iSet; }
 
@@ -34,7 +33,7 @@ private:
   void processEventAsync(tbb::task_group& group, TaskHolder iCallback, const OutputerBase& outputer);
 
   void doNextEvent(std::atomic<long>& index, tbb::task_group& group,  const OutputerBase& outputer, 
-		   AtomicRefCounter counter);
+		   TaskHolder finalTask);
 
   SharedSourceBase* source_;
   WaiterBase const* waiter_;

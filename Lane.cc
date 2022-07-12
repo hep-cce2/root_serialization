@@ -11,8 +11,8 @@ Lane::Lane(unsigned int iIndex, SharedSourceBase* iSource, WaiterBase const* iWa
 }
 
 void Lane::processEventsAsync(std::atomic<long>& index, tbb::task_group& group, const OutputerBase& outputer, 
-			      AtomicRefCounter counter) {
-  doNextEvent(index, group,  outputer, std::move(counter));
+			      TaskHolder finalTask) {
+  doNextEvent(index, group,  outputer, std::move(finalTask));
 }
 
 
@@ -61,7 +61,7 @@ void Lane::processEventAsync(tbb::task_group& group, TaskHolder iCallback, const
   }
 }
 
-void Lane::doNextEvent(std::atomic<long>& index, tbb::task_group& group,  const OutputerBase& outputer, AtomicRefCounter counter) {
+void Lane::doNextEvent(std::atomic<long>& index, tbb::task_group& group,  const OutputerBase& outputer, TaskHolder finalTask) {
   using namespace std::string_literals;
   presentEventIndex_ = index++;
   if(source_->mayBeAbleToGoToEvent(presentEventIndex_)) {
@@ -69,9 +69,9 @@ void Lane::doNextEvent(std::atomic<long>& index, tbb::task_group& group,  const 
       std::cout <<"event "+std::to_string(presentEventIndex_)+"\n"<<std::flush;
     }
     
-    OptionalTaskHolder processEventTask(group, make_functor_task([this,&index, &group, &outputer, counter]() {
-          TaskHolder recursiveTask(group, make_functor_task([this, &index, &group, &outputer, counter]() {
-                doNextEvent(index, group, outputer, std::move(counter));
+    OptionalTaskHolder processEventTask(group, make_functor_task([this,&index, &group, &outputer, finalTask]() {
+          TaskHolder recursiveTask(group, make_functor_task([this, &index, &group, &outputer, finalTask]() {
+                doNextEvent(index, group, outputer, std::move(finalTask));
               }));
           processEventAsync(group, std::move(recursiveTask), outputer);
         }) );
