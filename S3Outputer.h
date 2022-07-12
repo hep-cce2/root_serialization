@@ -7,6 +7,8 @@
 #include <cassert>
 
 #include "zstd.h"
+
+#define TBB_PREVIEW_TASK_GROUP_EXTENSIONS 1 // for task_group::defer
 #include "tbb/task_group.h"
 
 #include "OutputerBase.h"

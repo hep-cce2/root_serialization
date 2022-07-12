@@ -36,10 +36,8 @@ class S3RequestWrapper {
       if ( group == nullptr ) {
         callback(std::move(req));
       } else {
-        std::cout << "Done request " << *req << std::endl;
         // could not figure out how to capture the unique_ptr properly... so release and remake
         auto task = [cb=std::move(callback), ptr=req.release()]() {
-          std::cout << "Callback request " << *ptr << std::endl;
           cb(S3Request::Ptr(ptr));
         };
         arena->enqueue([group=group, task=std::move(task)]() { group->run(task); });
@@ -129,13 +127,9 @@ class S3LibWrapper {
             throw std::runtime_error("out of memory while processing S3_runonce_request_context");
         }
 
-        std::string a(activeRequests, '#');
-        std::cout << a << std::endl;
-
         S3RequestWrapper* req;
         int currentlyActive{activeRequests};
         while ( (activeRequests < asyncRequestLimit_) and requests_.try_pop(req) and activeRequests < (currentlyActive+asyncAddRequestLimit_) ) {
-          std::cout << "Adding request " << *(req->req) << std::endl;
           _submit(req, ctx);
           activeRequests++;
         }
@@ -144,7 +138,7 @@ class S3LibWrapper {
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
       }
-      // TODO: this may abort requests in flight, should we wait?
+      // TODO: this may abort requests in flight, do we wait or is it synchronous?
       S3_destroy_request_context(ctx);
     }
 
@@ -272,7 +266,7 @@ class S3LibWrapper {
   private:
     S3Status initStatus_;
     int asyncRequestLimit_{256};
-    int asyncAddRequestLimit_{10000}; // TODO: when this is a reasonable number, there's a race
+    int asyncAddRequestLimit_{16}; // TODO: when this is a reasonable number, there's a race
     std::thread loop_;
     std::atomic<bool> running_;
     // all callbackData pointers are to S3RequestWrapper objects

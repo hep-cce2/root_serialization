@@ -147,11 +147,10 @@ void S3Outputer::outputAsync(unsigned int iLaneIndex, EventIdentifier const& iEv
 void S3Outputer::printSummary() const {
   {
     tbb::task_group group;
-    std::atomic<bool> busy{true};
     {
-      TaskHolder th(group, make_functor_task([&busy](){ busy = false; }));
+      TaskHolder finalTask(group, make_functor_task([&group, task=group.defer([](){})]() mutable { group.run(std::move(task)); }));
       TaskHolder productsDone(group, make_functor_task(
-          [this, stripeOut=std::move(currentEventStripe_), callback=std::move(th)]() mutable {
+          [this, stripeOut=std::move(currentEventStripe_), callback=std::move(finalTask)]() mutable {
             flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback)]() {
                 flushEventStripe(stripeOut, std::move(callback), true);
               });
@@ -163,8 +162,6 @@ void S3Outputer::printSummary() const {
           });
       }
     }
-    do { group.wait(); }
-    while ( busy );
     group.wait();
   }
 
