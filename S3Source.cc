@@ -45,7 +45,7 @@ void decompress_stripe(const objstripe::Compression& setting, std::string& blob,
 void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
   auto this_state{State::unretrieved};
   if ( state_.compare_exchange_strong(this_state, State::retrieving) ) {
-    conn_->get(name_, [this, callback=std::move(callback)](S3Request* req) mutable {
+    conn_->get(name_, callback.group(), [this, callback=std::move(callback)](S3Request::Ptr req) mutable {
         if ( req->status == S3Request::Status::ok ) {
           auto start = std::chrono::high_resolution_clock::now();
           if ( not data_.ParseFromString(req->buffer) ) {
@@ -139,7 +139,7 @@ S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, u
 {
   auto start = std::chrono::high_resolution_clock::now();
 
-  conn->get(objPrefix_ + "index", [this](S3Request* req) mutable {
+  conn->get(objPrefix_ + "index", nullptr, [this](S3Request::Ptr req) mutable {
       if ( req->status == S3Request::Status::ok ) {
         if ( not index_.ParseFromString(req->buffer) ) {
           throw std::runtime_error("Could not deserialize index in S3Source construction");

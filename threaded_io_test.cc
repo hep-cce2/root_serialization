@@ -127,6 +127,10 @@ int main(int argc, char* argv[]) {
         group.run([&]() {
             lane.processEventsAsync(ievt, group, *pOut, AtomicRefCounter(count));
           });
+        do {
+          group.wait();
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } while(count != 0);
         group.wait();
       });
   }
@@ -171,6 +175,8 @@ int main(int argc, char* argv[]) {
       for(auto& group: groups) {
 	group.wait();
       }
+      // std::this_thread::yield();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     } while(nLanesWaiting != 0);
     //be sure all groups have fully finished
     for(auto& group: groups) {

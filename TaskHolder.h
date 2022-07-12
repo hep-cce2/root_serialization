@@ -54,7 +54,7 @@ public:
   TaskHolder& operator=(TaskHolder const&) = delete;
   TaskHolder& operator=(TaskHolder&&) = delete;
 
-  tbb::task_group* group() { return group_;}
+  tbb::task_group* group() const { return group_;}
   void doneWaiting() {
     auto t = task_;
     task_ = nullptr;

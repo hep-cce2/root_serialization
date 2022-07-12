@@ -147,8 +147,9 @@ void S3Outputer::outputAsync(unsigned int iLaneIndex, EventIdentifier const& iEv
 void S3Outputer::printSummary() const {
   {
     tbb::task_group group;
+    std::atomic<bool> busy{true};
     {
-      TaskHolder th(group, make_functor_task([](){}));
+      TaskHolder th(group, make_functor_task([&busy](){ busy = false; }));
       TaskHolder productsDone(group, make_functor_task(
           [this, stripeOut=std::move(currentEventStripe_), callback=std::move(th)]() mutable {
             flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback)]() {
@@ -162,6 +163,8 @@ void S3Outputer::printSummary() const {
           });
       }
     }
+    do { group.wait(); }
+    while ( busy );
     group.wait();
   }
 
@@ -291,9 +294,9 @@ void S3Outputer::appendProductBuffer(
       [this, name=std::move(name), pOut=std::move(pOut), callback=std::move(iCallback)]() {
         std::string finalbuf;
         pOut.SerializeToString(&finalbuf);
-        conn_->put(name, std::move(finalbuf), [name=std::move(name), callback=std::move(callback)](S3Request* req) {
+        conn_->put(name, std::move(finalbuf), callback.group(), [name=std::move(name), callback=std::move(callback)](S3Request::Ptr req) {
             if ( req->status != S3Request::Status::ok ) {
-              std::cerr << "failed to write product buffer " << name << std::endl;
+              std::cerr << "failed to write product buffer " << name << *req << std::endl;
             }
           });
       }
@@ -325,7 +328,7 @@ void S3Outputer::flushEventStripe(const objstripe::EventStripe& stripe, TaskHold
     [this, idxcopy=index_, callback=std::move(iCallback)]() {
       std::string indexOut;
       idxcopy.SerializeToString(&indexOut);
-      conn_->put(objPrefix_ + "index", std::move(indexOut), [callback=std::move(callback)](S3Request* req) {
+      conn_->put(objPrefix_ + "index", std::move(indexOut), callback.group(), [callback=std::move(callback)](S3Request::Ptr req) {
           if ( req->status != S3Request::Status::ok ) {
             std::cerr << "failed to write product buffer index" << std::endl;
           }

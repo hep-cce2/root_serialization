@@ -9,7 +9,6 @@
 struct S3BucketContext;
 
 namespace cce::tf {
-class S3LibWrapper;
 class S3Connection;
 typedef std::shared_ptr<const S3Connection> S3ConnectionRef;
 
@@ -17,46 +16,23 @@ class S3Request {
   public:
     enum class Type {undef, get, put};
     enum class Status {waiting, ok, error};
-    typedef std::function<void(S3Request*)> Callback;
+    typedef std::unique_ptr<S3Request> Ptr;
+    typedef std::function<void(S3Request::Ptr)> Callback;
     static constexpr std::chrono::milliseconds max_timeout{60000};
 
-    const Type type;
-    const S3BucketContext* bucketCtx;
-    const std::string key;
-    const Callback callback;
-    const std::chrono::milliseconds timeout{1000};
-    const int retries{5};
-    const bool async{false};
-    std::string buffer;
-    Status status;
-
-  private:
     S3Request() = delete;
-    // constructor for devnull connection
-    S3Request(Type iType, const std::string& iKey, Status stat):
-      type{iType}, key{iKey}, status{stat} {};
-    // get constructor
-    S3Request(Type iType, const S3BucketContext* iCtx, const std::string& iKey, Callback iCb, bool iAsync):
-      type{iType}, bucketCtx{iCtx}, key{iKey}, callback{iCb}, async{iAsync}
-    {
-      _timeout = timeout.count();
-    };
-    // put constructor
-    S3Request(Type iType, const S3BucketContext* iCtx, const std::string& iKey, Callback iCb, bool iAsync, std::string&& buf):
-      type{iType}, bucketCtx{iCtx}, key{iKey}, callback{iCb}, async{iAsync}, buffer{buf}
-    {
-      _timeout = timeout.count();
-    };
+    S3Request(Type iType, const std::string& iKey, std::chrono::milliseconds iTimeout=std::chrono::milliseconds(1000), int iRetries=5):
+      type{iType}, key{iKey}, timeout{iTimeout}, retries{iRetries} {};
 
-    size_t _put_offset{0};
-    int _retries_executed{0};
-    long _timeout;
+    const Type type;
+    const std::string key;
+    const std::chrono::milliseconds timeout;
+    const int retries;
+    std::string buffer;
+    Status status{Status::waiting};
 
-  friend class S3LibWrapper;
-  friend class S3Connection;
-  friend std::ostream& operator<<(std::ostream& os, const S3Request& req);
+    friend std::ostream& operator<<(std::ostream& os, const S3Request& req);
 };
-
 
 class S3Connection {
   public:
@@ -70,8 +46,10 @@ class S3Connection {
         std::string_view iSecurityToken
         );
 
-    void get(const std::string& key, S3Request::Callback&& cb) const;
-    void put(const std::string& key, std::string&& value, S3Request::Callback&& cb) const;
+    // if group == nullptr, these functions execute synchronously
+    // else, the request will execute async and schedule the callback to run in the group when done
+    void get(const std::string& key, tbb::task_group* group, S3Request::Callback&& cb) const;
+    void put(const std::string& key, std::string&& value, tbb::task_group* group, S3Request::Callback&& cb) const;
     std::chrono::microseconds blockingTime() const { return std::chrono::microseconds(blockingTime_.load()); }
 
   private:
