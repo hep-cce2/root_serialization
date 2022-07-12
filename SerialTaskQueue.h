@@ -121,6 +121,7 @@ class SerialTaskQueue {
     /** Base class for all tasks held by the SerialTaskQueue */
     class TaskBase {
       friend class SerialTaskQueue;
+
       virtual ~TaskBase() = default;
 
       tbb::task_group* group() { return m_group;}

@@ -76,6 +76,7 @@ EventIdentifier SharedPDSSource::eventIdentifier(unsigned int iLane, long iEvent
 
 void SharedPDSSource::readEventAsync(unsigned int iLane, long iEventIndex,  OptionalTaskHolder iTask) {
   queue_.push(*iTask.group(), [iLane, optTask = std::move(iTask), this]() mutable {
+
       auto start = std::chrono::high_resolution_clock::now();
       std::vector<uint32_t> buffer;
       
