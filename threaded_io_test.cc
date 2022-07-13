@@ -135,6 +135,8 @@ int main(int argc, char* argv[]) {
   }
   std::cout <<"finished warmup"<<std::endl;
 
+  tbb::task_arena arena(parallelism);
+
   auto out = outFactory(nLanes);
   auto source = sourceFactory(nLanes, nEvents);
   std::unique_ptr<WaiterBase> waiter;
@@ -152,8 +154,6 @@ int main(int argc, char* argv[]) {
   }
 
   std::atomic<long> ievt{0};
-  
-  tbb::task_arena arena(parallelism);
 
   decltype(std::chrono::high_resolution_clock::now()) start;
   auto pOut = out.get();
