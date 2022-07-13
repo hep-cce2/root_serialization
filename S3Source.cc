@@ -63,7 +63,6 @@ void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
           assert(nbytes == content_.size());
           decompressTime_ = std::chrono::duration_cast<decltype(decompressTime_)>(std::chrono::high_resolution_clock::now() - start);
           state_ = State::retrieved;
-          std::cout << "retrieved ProductStripe " + name_ << std::endl;
           callback.doneWaiting();
           waiters_.doneWaiting();
         }
@@ -122,7 +121,6 @@ void S3DelayedRetriever::getAsync(DataProductRetriever& product, int index, Task
   TaskHolder fetchCallback(*callback.group(), make_functor_task(
       [this, index, callback=std::move(callback)]() mutable {
         auto start = std::chrono::high_resolution_clock::now();
-        std::cout << "deserialize buffer " + dataProducts_[index].name() + std::to_string(globalEventIndex_) << std::endl;
         auto buf = stripes_[index]->bufferAt(globalEventIndex_);
         auto readSize = deserializers_[index].deserialize(buf.data(), buf.size(), *dataProducts_[index].address());
         dataProducts_[index].setSize(readSize);

@@ -129,7 +129,11 @@ class S3LibWrapper {
 
         S3RequestWrapper* req;
         int currentlyActive{activeRequests};
-        while ( (activeRequests < asyncRequestLimit_) and requests_.try_pop(req) and activeRequests < (currentlyActive+asyncAddRequestLimit_) ) {
+        while (
+            (activeRequests < asyncRequestLimit_)
+            and activeRequests < (currentlyActive+asyncAddRequestLimit_)
+            and requests_.try_pop(req) // test this last!
+            ) {
           _submit(req, ctx);
           activeRequests++;
         }

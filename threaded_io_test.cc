@@ -165,7 +165,7 @@ int main(int argc, char* argv[]) {
       for(auto& lane: lanes) {
         auto& group = *itGroup;
         TaskHolder finalTask(group, make_functor_task([&group, task=group.defer([](){})]() mutable { group.run(std::move(task)); }));
-        group.run([&]() {lane.processEventsAsync(ievt, group, *pOut, std::move(finalTask));});
+        group.run([&, ft=std::move(finalTask)]() {lane.processEventsAsync(ievt, group, *pOut, std::move(ft));});
         ++itGroup;
       }
     }
