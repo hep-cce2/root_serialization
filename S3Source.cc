@@ -139,7 +139,7 @@ S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, u
 {
   auto start = std::chrono::high_resolution_clock::now();
 
-  conn->get(objPrefix_ + "index", nullptr, [this](S3Request::Ptr req) mutable {
+  conn_->get(objPrefix_ + "index", nullptr, [this](S3Request::Ptr req) mutable {
       if ( req->status == S3Request::Status::ok ) {
         if ( not index_.ParseFromString(req->buffer) ) {
           throw std::runtime_error("Could not deserialize index in S3Source construction");

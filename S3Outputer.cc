@@ -287,17 +287,13 @@ void S3Outputer::appendProductBuffer(
     pOut.set_allocated_compression(new objstripe::Compression(buf.compressor_.getCompression()));
     std::string name = buf.prefix_;
     name += std::to_string(pOut.globaloffset());
-    iCallback.group()->run(
-      [this, name=std::move(name), pOut=std::move(pOut), callback=std::move(iCallback)]() {
-        std::string finalbuf;
-        pOut.SerializeToString(&finalbuf);
-        conn_->put(name, std::move(finalbuf), callback.group(), [name=std::move(name), callback=std::move(callback)](S3Request::Ptr req) {
-            if ( req->status != S3Request::Status::ok ) {
-              std::cerr << "failed to write product buffer " << name << *req << std::endl;
-            }
-          });
-      }
-    );
+    std::string finalbuf;
+    pOut.SerializeToString(&finalbuf);
+    conn_->put(name, std::move(finalbuf), iCallback.group(), [name=std::move(name), callback=std::move(iCallback)](S3Request::Ptr req) {
+        if ( req->status != S3Request::Status::ok ) {
+          std::cerr << "failed to write product buffer " << name << *req << std::endl;
+        }
+      });
     if ( buf.info_->flushsize() == 0 ) {
       // only modification to info_, done inside serial appendQueue_
       buf.info_->set_flushsize(bufferNevents);
@@ -320,16 +316,12 @@ void S3Outputer::flushEventStripe(const objstripe::EventStripe& stripe, TaskHold
   }
 
   // TODO: checkpoint only every few event stripes?
-  iCallback.group()->run(
-    // bind shallow copy of index_ to ensure validity
-    [this, idxcopy=index_, callback=std::move(iCallback)]() {
-      std::string indexOut;
-      idxcopy.SerializeToString(&indexOut);
-      conn_->put(objPrefix_ + "index", std::move(indexOut), callback.group(), [callback=std::move(callback)](S3Request::Ptr req) {
-          if ( req->status != S3Request::Status::ok ) {
-            std::cerr << "failed to write product buffer index" << std::endl;
-          }
-        });
+  std::string indexOut;
+  index_.SerializeToString(&indexOut);
+  conn_->put(objPrefix_ + "index", std::move(indexOut), iCallback.group(), [callback=std::move(iCallback)](S3Request::Ptr req) {
+      if ( req->status != S3Request::Status::ok ) {
+        std::cerr << "failed to write product buffer index" << std::endl;
+      }
     });
   flushTime_ += std::chrono::duration_cast<decltype(flushTime_)>(std::chrono::high_resolution_clock::now() - start);
 }
