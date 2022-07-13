@@ -87,6 +87,7 @@ class S3LibWrapper {
       S3RequestContext * ctx;
       fd_set read_fds, write_fds, except_fds;
       int max_fd, activeRequests{0};
+      int topfds{0}, topreq{0};
       S3_create_request_context(&ctx);
       while(running_) {
         FD_ZERO(&read_fds);
@@ -99,6 +100,8 @@ class S3LibWrapper {
           case S3StatusInternalError:
             throw std::runtime_error("internal error in S3_get_request_context_fdsets");
         }
+
+        topfds = std::max(topfds, max_fd);
 
         if ( max_fd != -1 ) {
           int64_t timeout = std::min(100l, S3_get_request_context_timeout(ctx)); // milliseconds
@@ -119,6 +122,7 @@ class S3LibWrapper {
           case S3StatusOutOfMemory:
             throw std::runtime_error("out of memory while processing S3_runonce_request_context");
         }
+        topreq = std::max(topreq, activeRequests);
 
         S3RequestWrapper* req;
         int currentlyActive{activeRequests};
@@ -137,6 +141,7 @@ class S3LibWrapper {
       }
       // TODO: this may abort requests in flight, do we wait or is it synchronous?
       S3_destroy_request_context(ctx);
+      std::cout << "S3LibWrapper: max open file descriptors: " << topfds << ", max concurrent requests: " << topreq << std::endl;
     }
 
     void _submit(S3RequestWrapper* req, S3RequestContext* ctx) const {
@@ -262,8 +267,8 @@ class S3LibWrapper {
 
   private:
     S3Status initStatus_;
-    int asyncRequestLimit_{256};
-    int asyncAddRequestLimit_{16}; // TODO: when this is a reasonable number, there's a race
+    int asyncRequestLimit_{512}; // no more than FD_SETSIZE (1024)
+    int asyncAddRequestLimit_{64};
     std::thread loop_;
     std::atomic<bool> running_;
     // all callbackData pointers are to S3RequestWrapper objects
