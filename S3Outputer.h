@@ -67,7 +67,10 @@ class S3Outputer : public OutputerBase {
 private:
   struct ProductOutputBuffer {
     ProductOutputBuffer(const std::string& prefix, objstripe::ProductInfo* info, const objstripe::Compression& comp) :
-      prefix_{prefix}, info_{info}, compressor_{comp} {};
+      prefix_{prefix}, info_{info}, compressor_{comp} {
+        stripe_.set_content("");
+        stripe_.set_allocated_compression(new objstripe::Compression(compressor_.getCompression()));
+      };
 
     const std::string prefix_;
     objstripe::ProductInfo* info_; // owned by index_

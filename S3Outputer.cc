@@ -202,14 +202,16 @@ void S3Outputer::collateProducts(
   sev->set_event(iEventID.event);
   if (verbose_ >= 2) { std::cout << sev->DebugString(); }
 
-  TaskHolder productsDoneCallback([this, cb=std::move(iCallback)]() mutable {
+  TaskHolder productsDoneCallback(
+    // make lambda and call, since move assignment is disabled
+    [this, cb=std::move(iCallback)]() mutable {
       if ( currentEventStripe_.events_size() == eventFlushSize_ ) {
-        if(verbose_ >= 2) { std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n"; }
         objstripe::EventStripe stripeOut;
         stripeOut.mutable_events()->Reserve(eventFlushSize_);
         std::swap(currentEventStripe_, stripeOut);
         return TaskHolder(*cb.group(), make_functor_task(
             [this, stripeOut=std::move(stripeOut), callback=std::move(cb)]() mutable {
+              if(verbose_ >= 2) { std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n"; }
               flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback)]() {
                   flushEventStripe(stripeOut, std::move(callback));
                 });
@@ -277,23 +279,20 @@ void S3Outputer::appendProductBuffer(
         + " is full ("s + std::to_string(bufferNbytes)
         + " bytes, "s + std::to_string(bufferNevents) + " events), flushing\n";
     }
-    objstripe::ProductStripe pOut;
-    pOut.mutable_counts()->Reserve(bufferNevents);
-    pOut.mutable_content()->reserve(bufferNbytes);
-    pOut.set_globaloffset(buf.stripe_.globaloffset() + bufferNevents);
 
-    std::swap(buf.stripe_, pOut);
-
-    pOut.set_allocated_compression(new objstripe::Compression(buf.compressor_.getCompression()));
-    std::string name = buf.prefix_;
-    name += std::to_string(pOut.globaloffset());
-    std::string finalbuf;
-    pOut.SerializeToString(&finalbuf);
-    conn_->put(name, std::move(finalbuf), iCallback.group(), [name=std::move(name), callback=std::move(iCallback)](S3Request::Ptr req) {
+    std::string name = buf.prefix_ + std::to_string(buf.stripe_.globaloffset());
+    auto req = std::make_shared<S3Request>(S3Request::Type::put, name);
+    buf.stripe_.SerializeToString(&req->buffer);
+    auto putDoneTask = TaskHolder(*iCallback.group(), make_functor_task([req, callback=std::move(iCallback)]() {
         if ( req->status != S3Request::Status::ok ) {
-          std::cerr << "failed to write product buffer " << name << *req << std::endl;
+          std::cerr << "failed to write product buffer " << *req << std::endl;
         }
-      });
+      }));
+    conn_->submit(std::move(req), std::move(putDoneTask), true);
+
+    buf.stripe_.clear_counts();
+    buf.stripe_.clear_content();
+    buf.stripe_.set_globaloffset(buf.stripe_.globaloffset() + bufferNevents);
     if ( buf.info_->flushsize() == 0 ) {
       // only modification to info_, done inside serial appendQueue_
       buf.info_->set_flushsize(bufferNevents);
@@ -316,13 +315,14 @@ void S3Outputer::flushEventStripe(const objstripe::EventStripe& stripe, TaskHold
   }
 
   // TODO: checkpoint only every few event stripes?
-  std::string indexOut;
-  index_.SerializeToString(&indexOut);
-  conn_->put(objPrefix_ + "index", std::move(indexOut), iCallback.group(), [callback=std::move(iCallback)](S3Request::Ptr req) {
+  auto req = std::make_shared<S3Request>(S3Request::Type::put, objPrefix_ + "index");
+  index_.SerializeToString(&req->buffer);
+  auto putDoneTask = TaskHolder(*iCallback.group(), make_functor_task([req, callback=std::move(iCallback)]() {
       if ( req->status != S3Request::Status::ok ) {
         std::cerr << "failed to write product buffer index" << std::endl;
       }
-    });
+    }));
+  conn_->submit(std::move(req), std::move(putDoneTask), true);
   flushTime_ += std::chrono::duration_cast<decltype(flushTime_)>(std::chrono::high_resolution_clock::now() - start);
 }
 

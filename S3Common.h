@@ -5,6 +5,8 @@
 #include <mutex>
 #include <ostream>
 
+#include "TaskHolder.h"
+
 // libs3.h
 struct S3BucketContext;
 
@@ -16,8 +18,6 @@ class S3Request {
   public:
     enum class Type {undef, get, put};
     enum class Status {waiting, ok, error};
-    typedef std::unique_ptr<S3Request> Ptr;
-    typedef std::function<void(S3Request::Ptr)> Callback;
     static constexpr std::chrono::milliseconds max_timeout{60000};
 
     S3Request() = delete;
@@ -46,10 +46,7 @@ class S3Connection {
         std::string_view iSecurityToken
         );
 
-    // if group == nullptr, these functions execute synchronously
-    // else, the request will execute async and schedule the callback to run in the group when done
-    void get(const std::string& key, tbb::task_group* group, S3Request::Callback&& cb) const;
-    void put(const std::string& key, std::string&& value, tbb::task_group* group, S3Request::Callback&& cb) const;
+    void submit(std::shared_ptr<S3Request> req, TaskHolder&& callback, bool async) const;
     std::chrono::microseconds blockingTime() const { return std::chrono::microseconds(blockingTime_.load()); }
 
   private:

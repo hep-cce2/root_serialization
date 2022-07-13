@@ -2,6 +2,7 @@
 #define TaskHolder_h
 
 #include <memory>
+#include <iostream>
 #include "tbb/task_group.h"
 #include "TaskBase.h"
 
@@ -11,9 +12,9 @@ public:
   friend class WaitingTaskList;
 
   TaskHolder(): group_{nullptr}, task_{nullptr} {}
-  TaskHolder(tbb::task_group& iGroup, std::unique_ptr<TaskBase> iTask): 
-    group_{&iGroup}, task_{iTask.release()} {
-      //std::cout <<"new task "<<task_<<std::endl;
+  TaskHolder(tbb::task_group& iGroup, std::unique_ptr<TaskBase> iTask, bool track=false):
+    group_{&iGroup}, task_{iTask.release()}, track_{track} {
+      if ( track_ ) std::cout << "New holder for task " + std::to_string(reinterpret_cast<std::uintptr_t>(task_)) << std::endl;
       task_->increment_ref_count();
     }
 
@@ -25,14 +26,16 @@ public:
 
   TaskHolder( const TaskHolder& iOther):
     group_{iOther.group_},
-    task_{iOther.task_} {
-      //std::cout <<"copy holder with task "<<task_<<std::endl;
+    task_{iOther.task_},
+    track_{iOther.track_} {
+      if ( track_ ) std::cout << "Copy holder with task " + std::to_string(reinterpret_cast<std::uintptr_t>(task_)) << std::endl;
       if(task_) { task_->increment_ref_count(); }
   }
   TaskHolder(TaskHolder&& iOther):
     group_{iOther.group_},
-    task_{iOther.task_} {
-      //std::cout <<"move holder with task "<<task_<<std::endl;
+    task_{iOther.task_},
+    track_{iOther.track_} {
+      if ( track_ ) std::cout << "Move holder with task " + std::to_string(reinterpret_cast<std::uintptr_t>(task_)) << std::endl;
       iOther.task_ = nullptr;
   }
 
@@ -59,12 +62,13 @@ public:
     auto t = task_;
     task_ = nullptr;
     if(t->decrement_ref_count()) {
-      //std::cout <<"Task "<<t<<std::endl;
-      group_->run([t]() {
-	  t->execute();
-	  //std::cout <<"delete "<<t<<std::endl;
-	  delete t;
-	});
+      if ( track_ ) std::cout << "Scheduling task " + std::to_string(reinterpret_cast<std::uintptr_t>(t)) << std::endl;
+      group_->run([t, track=track_]() {
+        if ( track ) std::cout << "Running task " + std::to_string(reinterpret_cast<std::uintptr_t>(t)) << std::endl;
+        t->execute();
+        if ( track ) std::cout << "Deleting task " + std::to_string(reinterpret_cast<std::uintptr_t>(t)) << std::endl;
+        delete t;
+      });
     }
   }
 private:
@@ -76,6 +80,7 @@ private:
 
   tbb::task_group* group_;
   TaskBase* task_;
+  bool track_;
 };
 }
 #endif

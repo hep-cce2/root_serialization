@@ -7,15 +7,13 @@
 #include <iostream>
 #include <utility>
 
-#include "tbb/concurrent_vector.h"
-
+#include "S3Common.h"
 #include "SharedSourceBase.h"
 #include "DataProductRetriever.h"
 #include "DelayedProductRetriever.h"
 #include "SerialTaskQueue.h"
 #include "WaitingTaskList.h"
 #include "DeserializeStrategy.h"
-#include "S3Common.h"
 #include "objectstripe.pb.h"
 
 

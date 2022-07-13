@@ -45,7 +45,10 @@ void decompress_stripe(const objstripe::Compression& setting, std::string& blob,
 void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
   auto this_state{State::unretrieved};
   if ( state_.compare_exchange_strong(this_state, State::retrieving) ) {
-    conn_->get(name_, callback.group(), [this, callback=std::move(callback)](S3Request::Ptr req) mutable {
+    auto req = std::make_shared<S3Request>(S3Request::Type::get, name_);
+    auto group = callback.group();
+    waiters_.add(std::move(callback));
+    auto getDoneTask = TaskHolder(*group, make_functor_task([this, req]() {
         if ( req->status == S3Request::Status::ok ) {
           auto start = std::chrono::high_resolution_clock::now();
           if ( not data_.ParseFromString(req->buffer) ) {
@@ -61,13 +64,13 @@ void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
           assert(offsets_.size() == data_.counts_size() + 1);
           ::decompress_stripe(data_.compression(), *data_.mutable_content(), content_, nbytes);
           assert(nbytes == content_.size());
+          data_.clear_content();
           decompressTime_ = std::chrono::duration_cast<decltype(decompressTime_)>(std::chrono::high_resolution_clock::now() - start);
           state_ = State::retrieved;
-          callback.doneWaiting();
           waiters_.doneWaiting();
-        }
-        else { throw std::runtime_error("Could not retrieve ProductStripe for key " + name_); }
-      });
+        } else { throw std::runtime_error("Could not retrieve ProductStripe for key " + name_); }
+      }));
+    conn_->submit(std::move(req), std::move(getDoneTask), true);
   } else if (this_state == State::retrieved ) {
     return;
   } else {
@@ -139,14 +142,21 @@ S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, u
 {
   auto start = std::chrono::high_resolution_clock::now();
 
-  conn_->get(objPrefix_ + "index", nullptr, [this](S3Request::Ptr req) mutable {
-      if ( req->status == S3Request::Status::ok ) {
-        if ( not index_.ParseFromString(req->buffer) ) {
-          throw std::runtime_error("Could not deserialize index in S3Source construction");
+  {
+    tbb::task_group group;
+    auto req = std::make_shared<S3Request>(S3Request::Type::get, objPrefix_ + "index");
+    auto getDoneTask = TaskHolder(group, make_functor_task([this, req]() {
+        if ( req->status == S3Request::Status::ok ) {
+          if ( not index_.ParseFromString(req->buffer) ) {
+            throw std::runtime_error("Could not deserialize index in S3Source construction");
+          }
         }
-      }
-      else { throw std::runtime_error("Could not retrieve index in S3Source construction"); }
-    });
+        else { throw std::runtime_error("Could not retrieve index in S3Source construction"); }
+      }));
+    conn_->submit(std::move(req), std::move(getDoneTask), false);
+    group.wait();
+  }
+
   if ( verbose_ >= 3 ) {
     std::cout << index_.DebugString() << "\n";
   }

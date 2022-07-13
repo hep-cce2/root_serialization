@@ -11,10 +11,8 @@
 
 #include "libs3.h"
 #include "tbb/task_arena.h"
-#include "tbb/task_group.h"
 #include "tbb/concurrent_queue.h"
 #include "S3Common.h"
-#include "FunctorTask.h"
 
 
 namespace {
@@ -22,32 +20,27 @@ using namespace cce::tf;
 
 class S3RequestWrapper {
   public:
-    S3RequestWrapper(S3Request::Ptr iReq, const S3BucketContext* iCtx, S3Request::Callback iCb, tbb::task_group* iGroup):
-      req{std::move(iReq)}, bucketCtx{iCtx}, callback{iCb}, group{iGroup}
+    S3RequestWrapper(std::shared_ptr<S3Request> iReq, const S3BucketContext* iCtx, TaskHolder&& iCallback, bool iAsync):
+      req{std::move(iReq)}, bucketCtx{iCtx}, callback{std::move(iCallback)}, async{iAsync}
     {
-      if ( group != nullptr ) {
+      if ( async ) {
         arena = std::make_unique<tbb::task_arena>(tbb::task_arena::attach{});
       }
       backoffTimeout = req->timeout.count();
     };
 
-    inline bool isAsync() const { return group != nullptr; };
     void done() {
-      if ( group == nullptr ) {
-        callback(std::move(req));
+      if ( async ) {
+        arena->enqueue([callback=std::move(callback)]() { });
       } else {
-        // could not figure out how to capture the unique_ptr properly... so release and remake
-        auto task = [cb=std::move(callback), ptr=req.release()]() {
-          cb(S3Request::Ptr(ptr));
-        };
-        arena->enqueue([group=group, task=std::move(task)]() { group->run(task); });
+        callback.doneWaiting();
       }
     };
 
-    S3Request::Ptr req;
+    std::shared_ptr<S3Request> req;
     const S3BucketContext* bucketCtx;
-    const S3Request::Callback callback;
-    tbb::task_group* group{nullptr};
+    TaskHolder callback;
+    const bool async;
     std::unique_ptr<tbb::task_arena> arena;
     size_t put_offset{0};
     int retries_executed{0};
@@ -66,7 +59,7 @@ class S3LibWrapper {
     bool running() const { return running_; }
 
     void submit(S3RequestWrapper* req) {
-      if ( req->isAsync() ) {
+      if ( req->async ) {
         requests_.push(req);
       } else {
         _submit(req, nullptr);
@@ -148,7 +141,7 @@ class S3LibWrapper {
 
     void _submit(S3RequestWrapper* req, S3RequestContext* ctx) const {
       // this function will block if ctx is null
-      assert(req->isAsync() xor ctx == nullptr);
+      assert(req->async xor ctx == nullptr);
       switch ( req->req->type ) {
         case S3Request::Type::undef:
           assert(false); // logic error
@@ -200,7 +193,7 @@ class S3LibWrapper {
           static thread_local std::minstd_rand rng(std::hash<std::thread::id>{}(std::this_thread::get_id()));
           std::uniform_int_distribution dist(0l, std::min(S3Request::max_timeout.count(), req->backoffTimeout));
           auto dt = std::chrono::milliseconds(dist(rng));
-          if ( req->isAsync() ) {
+          if ( req->async ) {
             // TODO: async sleep by setting a future submit time and checking in loop_body
           } else {
             // TODO: better option?
@@ -212,7 +205,7 @@ class S3LibWrapper {
         }
         req->put_offset = 0;
         req->retries_executed++;
-        if ( req->isAsync() ) {
+        if ( req->async ) {
           instance().requests_.push(req);
         } else {
           // can libs3 callbacks recurse? probably...
@@ -379,35 +372,19 @@ S3Connection::S3Connection(
   });
 };
 
-void S3Connection::get(const std::string& key, tbb::task_group* group, S3Request::Callback&& cb) const {
+void S3Connection::submit(std::shared_ptr<S3Request> req, TaskHolder&& callback, bool async) const {
   auto start = std::chrono::high_resolution_clock::now();
   if ( ctx_ ) {
-    auto req = std::make_unique<S3Request>(S3Request::Type::get, key);
     // start of S3RequestWrapper lifecycle (ends in S3LibWrapper::responseCompleteCallback)
-    auto wrapper = new S3RequestWrapper(std::move(req), ctx_.get(), std::move(cb), group);
+    auto wrapper = new S3RequestWrapper(std::move(req), ctx_.get(), std::move(callback), async);
     S3LibWrapper::instance().submit(wrapper);
-  } else if ( cb ) {
-    auto dummy = std::make_unique<S3Request>(S3Request::Type::get, key);
-    dummy->status = S3Request::Status::error;
-    cb(std::move(dummy));
-  }
-  auto time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start);
-  blockingTime_ += time.count();
-};
-
-void S3Connection::put(const std::string& key, std::string&& value, tbb::task_group* group, S3Request::Callback&& cb) const {
-  auto start = std::chrono::high_resolution_clock::now();
-  if ( ctx_ ) {
-    auto req = std::make_unique<S3Request>(S3Request::Type::put, key);
-    req->buffer = std::move(value);
-    // start of S3RequestWrapper lifecycle (ends in S3LibWrapper::responseCompleteCallback)
-    auto wrapper = new S3RequestWrapper(std::move(req), ctx_.get(), std::move(cb), group);
-    S3LibWrapper::instance().submit(wrapper);
-  } else if ( cb ) {
-    auto dummy = std::make_unique<S3Request>(S3Request::Type::put, key);
-    dummy->buffer = std::move(value);
-    dummy->status = S3Request::Status::ok;
-    cb(std::move(dummy));
+  } else {
+    if ( req->type == S3Request::Type::put ) {
+      req->status = S3Request::Status::ok;
+    } else {
+      req->status = S3Request::Status::error;
+    }
+    callback.doneWaiting();
   }
   auto time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start);
   blockingTime_ += time.count();
