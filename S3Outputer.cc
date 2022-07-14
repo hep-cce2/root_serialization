@@ -119,7 +119,7 @@ void S3Outputer::setupForLane(unsigned int iLaneIndex, std::vector<DataProductRe
       prod->set_flushsize(0);
       prod->set_flushminbytes(productBufferFlushMinBytes_);
       // TODO: choose compression setting based on properties of ss?
-      buffers_.emplace_back(objPrefix_ + prod->productname(), prod, defaultCompression_);
+      buffers_.emplace_back(objPrefix_ + "/" + prod->productname(), prod, defaultCompression_);
     }
   }
   // all lanes see same products? if not we'll need a map
@@ -280,7 +280,7 @@ void S3Outputer::appendProductBuffer(
         + " bytes, "s + std::to_string(bufferNevents) + " events), flushing\n";
     }
 
-    std::string name = buf.prefix_ + std::to_string(buf.stripe_.globaloffset());
+    std::string name = buf.prefix_ + "/" + std::to_string(buf.stripe_.globaloffset());
     auto req = std::make_shared<S3Request>(S3Request::Type::put, name);
     buf.stripe_.SerializeToString(&req->buffer);
     auto putDoneTask = TaskHolder(*iCallback.group(), make_functor_task([req, callback=std::move(iCallback)]() {
@@ -320,7 +320,7 @@ void S3Outputer::flushEventStripe(const objstripe::EventStripe& stripe, TaskHold
   }
 
   // TODO: checkpoint only every few event stripes?
-  auto req = std::make_shared<S3Request>(S3Request::Type::put, objPrefix_ + "index");
+  auto req = std::make_shared<S3Request>(S3Request::Type::put, "index/" + objPrefix_);
   index_.SerializeToString(&req->buffer);
   auto putDoneTask = TaskHolder(*iCallback.group(), make_functor_task([req, callback=std::move(iCallback)]() {
       if ( req->status != S3Request::Status::ok ) {

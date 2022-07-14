@@ -144,7 +144,7 @@ S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, u
 
   {
     tbb::task_group group;
-    auto req = std::make_shared<S3Request>(S3Request::Type::get, objPrefix_ + "index");
+    auto req = std::make_shared<S3Request>(S3Request::Type::get, "index/" + objPrefix_);
     auto getDoneTask = TaskHolder(group, make_functor_task([this, req]() {
         if ( req->status == S3Request::Status::ok ) {
           if ( not index_.ParseFromString(req->buffer) ) {
@@ -234,12 +234,12 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
           if ( nextEventInStripe_ % productinfo.flushsize() == 0 ) {
             auto new_ps = std::make_shared<const DelayedProductStripeRetriever>(
                 conn_,
-                objPrefix_ + productinfo.productname() + std::to_string(globalEventIndex),
+                objPrefix_ + "/" + productinfo.productname() + "/" + std::to_string(globalEventIndex),
                 globalEventIndex
                 );
             if ( verbose_ >= 2 ) {
               std::cout << "setting lane " << iLane << "to read stripe " <<
-                objPrefix_ + productinfo.productname() + std::to_string(globalEventIndex) << "\n";
+                objPrefix_ + "/" + productinfo.productname() + "/" + std::to_string(globalEventIndex) << "\n";
             }
             std::swap(ps, new_ps);
             // record decompress time of old stripe
