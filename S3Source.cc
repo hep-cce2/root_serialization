@@ -207,9 +207,19 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
       {
         // default-constructed currentEventStripe_ will have size zero, so 0, 0 will load first stripe
         if(nextEventInStripe_ == currentEventStripe_.events_size()) {
-          // need to read ahead
-          // TODO: compression
-          currentEventStripe_.ParseFromString(index_.packedeventstripes(nextEventStripe_++));
+          // Need to read ahead
+          // TODO: perhaps not the best idea to clobber index_? At least for now we don't need it again
+          auto* stripeData = index_.mutable_packedeventstripes(nextEventStripe_);
+          if ( index_.has_eventstripecompression() ) {
+            auto dsize = index_.eventstripesizes(nextEventStripe_);
+            std::string decompressedStripe;
+            decompressedStripe.resize(dsize);
+            ::decompress_stripe(index_.eventstripecompression(), *stripeData, decompressedStripe, dsize);
+            currentEventStripe_.ParseFromString(decompressedStripe);
+          } else {
+            currentEventStripe_.ParseFromString(*stripeData);
+          }
+          nextEventStripe_++;
           nextEventInStripe_ = 0;
         }
         const auto event = currentEventStripe_.events(nextEventInStripe_);

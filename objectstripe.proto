@@ -31,6 +31,8 @@ message ObjectStripeIndex {
   repeated ProductInfo products = 3;
   repeated bytes packedEventStripes = 4;
   optional SerializeStrategy serializeStrategy = 5;
+  optional Compression eventStripeCompression = 6;
+  repeated uint32 eventStripeSizes = 7 [packed = true];
 }
 
 message EventStripe {

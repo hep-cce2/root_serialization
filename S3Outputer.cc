@@ -307,11 +307,16 @@ void S3Outputer::flushEventStripe(const objstripe::EventStripe& stripe, TaskHold
   }
   auto start = std::chrono::high_resolution_clock::now();
   index_.set_totalevents(index_.totalevents() + stripe.events_size());
-  auto dest = index_.add_packedeventstripes();
-  // TODO: compression
-  stripe.SerializeToString(dest);
-  if ( verbose_ >= 2 ) {
-    std::cout << "length of packed EventStripe: " << dest->size() << "\n";
+  {
+    auto dest = index_.add_packedeventstripes();
+    std::string buf;
+    stripe.SerializeToString(&buf);
+    eventStripeCompressor_.write(buf, *dest);
+    eventStripeCompressor_.flush(*dest);
+    index_.add_eventstripesizes(buf.size());
+    if ( verbose_ >= 2 ) {
+      std::cout << "length of packed EventStripe: " << dest->size() << "\n";
+    }
   }
 
   // TODO: checkpoint only every few event stripes?

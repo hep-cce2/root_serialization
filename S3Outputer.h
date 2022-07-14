@@ -24,6 +24,7 @@ namespace cce::tf {
 
 class StreamCompressor {
   public:
+    StreamCompressor() {};
     StreamCompressor(const objstripe::Compression& setting);
     const objstripe::Compression& getCompression() const { return setting_; }
     size_t write(const std::string_view blob, std::string& out);
@@ -56,6 +57,8 @@ class S3Outputer : public OutputerBase {
     index_.set_serializestrategy(objstripe::SerializeStrategy::kRoot);
     defaultCompression_.set_type(objstripe::CompressionType::kZSTD);
     defaultCompression_.set_level(4);
+    index_.set_allocated_eventstripecompression(new objstripe::Compression(defaultCompression_));
+    eventStripeCompressor_ = StreamCompressor(index_.eventstripecompression());
   }
 
   void setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) final;
@@ -115,6 +118,7 @@ private:
   // (for index_'s ProductInfos, appendProductBuffer() has finished before we access)
   mutable SerialTaskQueue flushQueue_;
   mutable objstripe::ObjectStripeIndex index_;
+  mutable StreamCompressor eventStripeCompressor_;
   mutable std::chrono::microseconds flushTime_;
 
   mutable std::atomic<std::chrono::microseconds::rep> parallelTime_;
