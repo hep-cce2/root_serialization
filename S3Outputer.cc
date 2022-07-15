@@ -33,18 +33,18 @@ size_t zstd_compress(ZSTD_CCtx* ctx, const std::string_view blob, std::string& o
   size_t status;
   if ( flush ) {
     ZSTD_inBuffer_s ibuf{.src=nullptr, .size=0, .pos=0};
-    while ( status != 0 ) {
-      status = ZSTD_compressStream2(ctx, &obuf, &ibuf, ZSTD_e_end);
-      if ( ZSTD_isError(status) ) {
-        std::cerr <<"ERROR in compression " << ZSTD_getErrorName(status) << std::endl;
-      }
+    do {
       if ( obuf.pos == obuf.size ) {
-        size_t new_size = obuf.size * 2;
+        size_t new_size = (obuf.size * 3) / 2;
         out.resize(new_size);
         obuf.dst = out.data();
         obuf.size = new_size;
       }
-    }
+      status = ZSTD_compressStream2(ctx, &obuf, &ibuf, ZSTD_e_end);
+      if ( ZSTD_isError(status) ) {
+        std::cerr <<"ERROR in compression " << ZSTD_getErrorName(status) << std::endl;
+      }
+    } while ( status != 0 );
   } else {
     ZSTD_inBuffer_s ibuf{.src=blob.data(), .size=blob.size(), .pos=0};
     while ( ibuf.pos < ibuf.size ) {
