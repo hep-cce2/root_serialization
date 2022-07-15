@@ -95,6 +95,9 @@ add_executable(threaded_io_test
   sourceFactoryGenerator.cc
   threaded_io_test.cc)
 
+# for task_group::defer
+target_compile_definitions(threaded_io_test PUBLIC TBB_PREVIEW_TASK_GROUP_EXTENSIONS=1)
+
 target_link_libraries(threaded_io_test
                       PRIVATE LZ4::lz4
                               ROOT::Core

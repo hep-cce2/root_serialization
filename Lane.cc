@@ -69,8 +69,8 @@ void Lane::doNextEvent(std::atomic<long>& index, tbb::task_group& group,  const 
       std::cout <<"event "+std::to_string(presentEventIndex_)+"\n"<<std::flush;
     }
     
-    OptionalTaskHolder processEventTask(group, make_functor_task([this,&index, &group, &outputer, finalTask]() {
-          TaskHolder recursiveTask(group, make_functor_task([this, &index, &group, &outputer, finalTask]() {
+    OptionalTaskHolder processEventTask(group, make_functor_task([this,&index, &group, &outputer, finalTask=std::move(finalTask)]() {
+          TaskHolder recursiveTask(group, make_functor_task([this, &index, &group, &outputer, finalTask=std::move(finalTask)]() {
                 doNextEvent(index, group, outputer, std::move(finalTask));
               }));
           processEventAsync(group, std::move(recursiveTask), outputer);
