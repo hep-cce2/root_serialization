@@ -148,6 +148,17 @@ This is similar to SharedRootEventSource except this time each entry in the `Eve
 > threaded_io_test -s SharedRootBatchEventsSource=test.eroot -t 1 -n 10
 ```
 
+#### S3Source
+Reads individual data product _stripes_--compressed concatenated serialized data products--from an S3 server, along with the appropriate
+event-level metadata to index them. See s3io.md for further details of the data layout.
+
+- verbose (int): increase number to get more detail
+- prefix (string): the object prefix in the S3 bucket
+- conn (string): path to the S3 connection configuration file
+```
+> threaded_io_test -s S3Source=prefix=testproducts:conn=s3conn.ini -t 1 -n 10
+```
+
 ### Outputers
 
 #### DummyOutputer
@@ -309,6 +320,19 @@ Writes the _event_ data products into a ROOT file where all data products for a 
 or
 ```
 > threaded_io_test -s ReplicatedRootSource=test.root -t 1 -n 10 -o RootBatchEventsOutputer=test.root:batchSize=4
+```
+
+#### S3Outputer
+Outputs individual data product _stripes_--compressed concatenated serialized data products--to an S3 server, along with the appropriate
+event-level metadata to index them. See s3io.md for further details of the data layout.
+
+- verbose (int): increase number to get more detail
+- prefix (string): the object prefix to use when storing data in the S3 bucket
+- productFlush (int): the minimum number of (possibly compressed) bytes to accumulate in the product stripe output buffer before flushing it to S3
+- eventFlush (int): the maximum number of events that can be contained in a single product stripe.
+- conn (string): path to the S3 connection configuration file
+```
+> threaded_io_test -s TestProductsSource -t 1 -n 10 -o S3Outputer=prefix=testproducts:conn=s3conn.ini
 ```
 
 ### Waiters
