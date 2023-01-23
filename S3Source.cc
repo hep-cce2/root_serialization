@@ -1,5 +1,6 @@
 #include <iostream>
 #include "zstd.h"
+#include "lzma.h"
 #include "S3Source.h"
 #include "SourceFactory.h"
 #include "Deserializer.h"
@@ -20,24 +21,57 @@ size_t zstd_perthread_decompress(void* dst, size_t dstCapacity, const void* src,
   return ZSTD_decompressDCtx(holder.ctx, dst, dstCapacity, src, compressedSize);
 }
 
+void zstd_decompress(std::string& blob, std::string& out, size_t dSize) {
+  out.resize(dSize);
+  size_t status = ZSTD_decompress(out.data(), out.size(), blob.data(), blob.size());
+  // size_t status = zstd_perthread_decompress(out.data(), out.size(), blob.data(), blob.size());
+  if ( ZSTD_isError(status) ) {
+    std::cerr <<"ERROR in decompression " << ZSTD_getErrorName(status) << std::endl;
+  }
+  if (status < dSize) {
+    std::cerr <<"ERROR in decompression, expected " << dSize << " bytes but only got " << status << std::endl;
+  }
+  blob.clear();
+  blob.shrink_to_fit();
+}
+
+// /cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/xz/5.2.5-d6fed2038c4e8d6e04531d1adba59f37
+void lzma_decompress(std::string& blob, std::string& out, size_t dSize) {
+  lzma_stream strm = LZMA_STREAM_INIT;
+  lzma_ret ret = lzma_stream_decoder(&strm, UINT64_MAX, 0);
+  if (ret != LZMA_OK) { throw std::runtime_error("Could not initialize LZMA encoder"); }
+
+  out.resize(dSize);
+  strm.next_in = (const uint8_t*) blob.data();
+  strm.avail_in = blob.size();
+  strm.next_out = (uint8_t*) out.data();
+  strm.avail_out = out.size();
+  while ( strm.avail_in > 0 ) {
+    ret = lzma_code(&strm, LZMA_RUN);
+    if ( ret == LZMA_STREAM_END ) break;
+    else if (ret != LZMA_OK) {
+      std::cerr << "ERROR in lzma compression " << ret << std::endl;
+      break;
+    }
+  }
+  if ( strm.avail_out > 0 ) {
+    std::cerr <<"ERROR in decompression, expected " << dSize << " bytes but only got " << dSize - strm.avail_out << std::endl;
+  }
+  blob.clear();
+  blob.shrink_to_fit();
+}
+
 void decompress_stripe(const objstripe::Compression& setting, std::string& blob, std::string& out, size_t dSize) {
   switch ( setting.type() ) {
     case objstripe::CompressionType::kNone:
       std::swap(blob, out);
-      return;
+      break;
     case objstripe::CompressionType::kZSTD:
-      out.resize(dSize);
-      size_t status = ZSTD_decompress(out.data(), out.size(), blob.data(), blob.size());
-      // size_t status = zstd_perthread_decompress(out.data(), out.size(), blob.data(), blob.size());
-      if ( ZSTD_isError(status) ) {
-        std::cerr <<"ERROR in decompression " << ZSTD_getErrorName(status) << std::endl;
-      }
-      if (status < dSize) {
-        std::cerr <<"ERROR in decompression, expected " << dSize << " bytes but only got " << status << std::endl;
-      }
-      blob.clear();
-      blob.shrink_to_fit();
-      return;
+      ::zstd_decompress(blob, out, dSize);
+      break;
+    case objstripe::CompressionType::kLZMA:
+      ::lzma_decompress(blob, out, dSize);
+      break;
   }
 }
 }

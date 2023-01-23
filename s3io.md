@@ -24,7 +24,7 @@ git clone git@github.com:hep-cce2/root_serialization.git
 cd root_serialization
 mkdir build && cd build
 cmake ../ \
-  -DCMAKE_PREFIX_PATH="/cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/lz4/1.9.2-373b1f6c80ba13e93f436c77aa63c026;/cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/protobuf/3.15.1-b2ca6d3fa59916150b27c3d598c7c7ac" \
+  -DCMAKE_PREFIX_PATH="/cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/lz4/1.9.2-373b1f6c80ba13e93f436c77aa63c026;/cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/protobuf/3.15.1-b2ca6d3fa59916150b27c3d598c7c7ac;/cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/xz/5.2.5-d6fed2038c4e8d6e04531d1adba59f37" \
   -Dzstd_DIR=/cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/zstd/1.4.5-ec760e16a89e932fdc84f1fd3192f206/lib/cmake/zstd \
   -DTBB_DIR=/cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/tbb/v2021.4.0-75e6d730601d8461f20893321f4f7660/lib/cmake/TBB \
   -DROOT_DIR=$ROOTSYS/cmake \

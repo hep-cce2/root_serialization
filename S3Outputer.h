@@ -7,6 +7,7 @@
 #include <cassert>
 
 #include "zstd.h"
+#include "lzma.h"
 
 #define TBB_PREVIEW_TASK_GROUP_EXTENSIONS 1 // for task_group::defer
 #include "tbb/task_group.h"
@@ -35,11 +36,13 @@ class StreamCompressor {
 
     struct ZSTDDeleter { void operator()(ZSTD_CStream* s) const {ZSTD_freeCStream(s);} };
     std::unique_ptr<ZSTD_CStream, ZSTDDeleter> zstd_;
+    struct LZMADeleter { void operator()(lzma_stream* s) const {lzma_end(s); free(s);} };
+    std::unique_ptr<lzma_stream, LZMADeleter> lzma_;
 };
 
 class S3Outputer : public OutputerBase {
  public:
-  S3Outputer(unsigned int iNLanes, std::string objPrefix, int iVerbose, size_t iProductBufferFlush, size_t iEventFlushSize, S3ConnectionRef conn):
+  S3Outputer(unsigned int iNLanes, std::string objPrefix, int iVerbose, size_t iProductBufferFlush, size_t iEventFlushSize, S3ConnectionRef conn, objstripe::CompressionType cType, uint32_t cLevel):
     serializers_(iNLanes),
     objPrefix_(objPrefix),
     verbose_(iVerbose),
@@ -55,8 +58,8 @@ class S3Outputer : public OutputerBase {
 
     // TODO: make configurable
     index_.set_serializestrategy(objstripe::SerializeStrategy::kRoot);
-    defaultCompression_.set_type(objstripe::CompressionType::kZSTD);
-    defaultCompression_.set_level(4);
+    defaultCompression_.set_type(cType);
+    defaultCompression_.set_level(cLevel);
     index_.set_allocated_eventstripecompression(new objstripe::Compression(defaultCompression_));
     eventStripeCompressor_ = StreamCompressor(index_.eventstripecompression());
   }

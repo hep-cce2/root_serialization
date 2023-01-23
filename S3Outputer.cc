@@ -10,19 +10,6 @@
 
 using namespace cce::tf;
 
-StreamCompressor::StreamCompressor(const objstripe::Compression& setting):
-  setting_{setting}
-{
-  switch ( setting_.type() ) {
-    case objstripe::CompressionType::kNone:
-      break;
-    case objstripe::CompressionType::kZSTD:
-      zstd_.reset(ZSTD_createCStream());
-      ZSTD_CCtx_setParameter(zstd_.get(), ZSTD_c_compressionLevel, setting_.level());
-      break;
-  }
-}
-
 namespace {
 size_t zstd_compress(ZSTD_CCtx* ctx, const std::string_view blob, std::string& out, bool flush) {
   size_t tail{out.size()};
@@ -65,6 +52,75 @@ size_t zstd_compress(ZSTD_CCtx* ctx, const std::string_view blob, std::string& o
   // but it doesn't appear to be nonzero
   return status;
 }
+
+lzma_ret lzma_init(lzma_stream* strm, uint32_t level) {
+  lzma_options_lzma opt_lzma2;
+  lzma_filter filters[] = {
+    { .id = LZMA_FILTER_LZMA2, .options = &opt_lzma2 },
+    { .id = LZMA_VLI_UNKNOWN,  .options = NULL },
+  };
+  lzma_lzma_preset(&opt_lzma2, level);
+  // TODO: pass through target stripe size for better choice of dict size?
+  // ROOT choice: input size / 4
+  opt_lzma2.dict_size = std::max(LZMA_DICT_SIZE_MIN, 32768u);
+  return lzma_stream_encoder(strm, filters, LZMA_CHECK_CRC32);
+}
+
+size_t lzma_compress(lzma_stream* strm, const std::string_view blob, std::string& out, bool flush) {
+  size_t tail{out.size()};
+  if ( out.capacity() < BUFSIZ ) out.resize(BUFSIZ);
+  else out.resize(out.capacity());
+
+  lzma_action action = LZMA_RUN;
+  strm->next_out = (uint8_t*) out.data() + tail;
+  strm->avail_out = out.size() - tail;
+  if ( flush ) {
+    action = LZMA_FINISH;
+    strm->next_in = NULL;
+    strm->avail_in = 0;
+  } else {
+    strm->next_in = (const uint8_t*) blob.data();
+    strm->avail_in = blob.size();
+  }
+
+  while ( (strm->avail_in > 0) || flush ) {
+    lzma_ret ret = lzma_code(strm, action);
+    if ( ret == LZMA_STREAM_END ) break;
+    else if ( strm->avail_out == 0 ) {
+      size_t old_size = out.size();
+      size_t new_size = (old_size * 3) / 2;
+      out.resize(new_size);
+      strm->next_out = (uint8_t*) out.data() + old_size;
+      strm->avail_out = new_size - old_size;
+    }
+    else if (ret != LZMA_OK) {
+      std::cerr << "ERROR in lzma compression " << ret << std::endl;
+      break;
+    }
+  }
+
+  out.resize(out.size() - strm->avail_out);
+  return 0;
+}
+} // anonymous namespace
+
+StreamCompressor::StreamCompressor(const objstripe::Compression& setting):
+  setting_{setting}
+{
+  switch ( setting_.type() ) {
+    case objstripe::CompressionType::kNone:
+      break;
+    case objstripe::CompressionType::kZSTD:
+      zstd_.reset(ZSTD_createCStream());
+      ZSTD_CCtx_setParameter(zstd_.get(), ZSTD_c_compressionLevel, setting_.level());
+      break;
+    case objstripe::CompressionType::kLZMA:
+      lzma_.reset((lzma_stream*) malloc(sizeof(lzma_stream)));
+      memset(lzma_.get(), 0, sizeof(lzma_stream));
+      lzma_ret ret = ::lzma_init(lzma_.get(), setting_.level());
+      if (ret != LZMA_OK) { throw std::runtime_error("Could not initialize LZMA encoder: " + std::to_string(ret)); }
+      break;
+  }
 }
 
 size_t StreamCompressor::write(const std::string_view blob, std::string& out) {
@@ -74,6 +130,8 @@ size_t StreamCompressor::write(const std::string_view blob, std::string& out) {
       return 0;
     case objstripe::CompressionType::kZSTD:
       return ::zstd_compress(zstd_.get(), blob, out, false);
+    case objstripe::CompressionType::kLZMA:
+      return ::lzma_compress(lzma_.get(), blob, out, false);
     default:
       assert(false);
       return 0;
@@ -86,6 +144,13 @@ void StreamCompressor::flush(std::string& out) {
       return;
     case objstripe::CompressionType::kZSTD:
       ::zstd_compress(zstd_.get(), {}, out, true);
+      return;
+    case objstripe::CompressionType::kLZMA:
+      ::lzma_compress(lzma_.get(), {}, out, true);
+      // unlike zstd, lzma must be (TODO: true?) reset after each finish
+      if (
+          ::lzma_init(lzma_.get(), setting_.level()) != LZMA_OK
+          ) { throw std::runtime_error("Could not initialize LZMA encoder"); }
       return;
     default:
       assert(false);
@@ -353,8 +418,24 @@ class Maker : public OutputerMakerBase {
       if(not conn) {
         return {};
       }
+      auto cType = objstripe::CompressionType::kZSTD;
+      uint32_t cLevel = 4;
+      auto cTypeStr = params.get<std::string>("compression");
+      if(cTypeStr) {
+        if ( cTypeStr.value() == "ZSTD" ) {
+          cType = objstripe::CompressionType::kZSTD;
+        }
+        else if ( cTypeStr.value() == "LZMA" ) {
+          cType = objstripe::CompressionType::kLZMA;
+          cLevel = 9;
+        }
+        else {
+          std::cerr << "Unrecognized compression type: " << cTypeStr.value() << "\n";
+          return {};
+        }
+      }
 
-      return std::make_unique<S3Outputer>(iNLanes, objPrefix.value(), verbose, productFlush, eventFlush, conn);
+      return std::make_unique<S3Outputer>(iNLanes, objPrefix.value(), verbose, productFlush, eventFlush, conn, cType, cLevel);
     }
 };
 

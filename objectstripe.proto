@@ -10,6 +10,7 @@ enum SerializeStrategy {
 enum CompressionType {
   kNone = 0;
   kZSTD = 1;
+  kLZMA = 2;
 }
 
 message Compression {

@@ -24,11 +24,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g3")
+add_compile_definitions(TBB_USE_THREADING_TOOLS=1)
 
 find_package(ROOT REQUIRED COMPONENTS Core RIO Tree)
 find_package(TBB REQUIRED)
 find_package(zstd REQUIRED)
 find_package(lz4 REQUIRED)
+find_package(LibLZMA REQUIRED)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
@@ -100,6 +102,7 @@ target_compile_definitions(threaded_io_test PUBLIC TBB_PREVIEW_TASK_GROUP_EXTENS
 
 target_link_libraries(threaded_io_test
                       PRIVATE LZ4::lz4
+                              LibLZMA::LibLZMA
                               ROOT::Core
                               ROOT::RIO
                               ROOT::Tree
