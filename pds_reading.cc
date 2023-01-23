@@ -206,7 +206,7 @@ std::vector<uint32_t> pds::uncompressEventBuffer(pds::Compression compression, s
   } else if(Compression::kZSTD == compression) {
     ZSTD_decompress(uBuffer.data(), uncompressedBufferSize*4, &(*(buffer.begin()+1)), compressedBufferSizeInBytes);
   } else if(Compression::kNone == compression) {
-    assert(buffer.size() == uBuffer.size()+2);
+    assert(buffer.size() == uBuffer.size()+1);
     std::copy(buffer.begin()+1, buffer.begin()+buffer.size(), uBuffer.begin());
   }
   return uBuffer;
