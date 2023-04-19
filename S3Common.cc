@@ -381,7 +381,7 @@ S3Connection::S3Connection(
   ctx_.reset(new S3BucketContext{
     .hostName = hostName_.c_str(),
     .bucketName = bucketName_.c_str(),
-    .protocol = S3ProtocolHTTP,
+    .protocol = S3ProtocolHTTPS,
     .uriStyle = S3UriStylePath,
     .accessKeyId = accessKeyId_.c_str(),
     .secretAccessKey = secretAccessKey_.c_str(),
