@@ -27,6 +27,7 @@ class S3RequestWrapper {
         arena = std::make_unique<tbb::task_arena>(tbb::task_arena::attach{});
       }
       backoffTimeout = req->timeout.count();
+      submit_after = std::chrono::steady_clock::now();
     };
 
     void done() {
@@ -45,6 +46,8 @@ class S3RequestWrapper {
     size_t put_offset{0};
     int retries_executed{0};
     long backoffTimeout;
+    std::chrono::steady_clock::time_point submit_after;
+    static_assert(std::chrono::steady_clock::duration() <= std::chrono::milliseconds(1));
 };
 
 class S3LibWrapper {
@@ -89,6 +92,7 @@ class S3LibWrapper {
       int max_fd, activeRequests{0};
       int topfds{0}, topreq{0};
       S3_create_request_context(&ctx);
+      std::vector<S3RequestWrapper*> to_defer;
       while(running_) {
         FD_ZERO(&read_fds);
         FD_ZERO(&write_fds);
@@ -131,9 +135,18 @@ class S3LibWrapper {
             and activeRequests < (currentlyActive+asyncAddRequestLimit_)
             and requests_.try_pop(req) // test this last!
             ) {
-          _submit(req, ctx);
-          activeRequests++;
+          if ( req->submit_after <= std::chrono::steady_clock::now() ) {
+            _submit(req, ctx);
+            activeRequests++;
+          } else {
+            to_defer.push_back(req);
+          }
         }
+        for (auto req : to_defer) {
+          requests_.push(req);
+        }
+        to_defer.clear();
+
         if ( activeRequests == 0 ) {
           // TODO: would be better to use a semaphore (submit() and ~S3LibWrapper need to notify)
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -193,23 +206,22 @@ class S3LibWrapper {
     static void responseCompleteCallback(S3Status status, const S3ErrorDetails *error, void *callbackData) {
       auto req = static_cast<S3RequestWrapper*>(callbackData);
       if ( S3_status_is_retryable(status) && req->retries_executed < req->req->retries ) {
-        if ( status == S3Status::S3StatusErrorRequestTimeout ) {
-          // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
-          static thread_local std::minstd_rand rng(std::hash<std::thread::id>{}(std::this_thread::get_id()));
-          std::uniform_int_distribution dist(0l, std::min(S3Request::max_timeout.count(), req->backoffTimeout));
-          auto dt = std::chrono::milliseconds(dist(rng));
-          if ( req->async ) {
-            // TODO: async sleep by setting a future submit time and checking in loop_body
-          } else {
-            // TODO: better option?
-            std::this_thread::sleep_for(dt);
-            req->backoffTimeout *= 2;
-          }
+        // e.g. S3StatusErrorRequestTimeout or ErrorSlowDown
+        // Run backoff algo, https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+        static thread_local std::minstd_rand rng(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        std::uniform_int_distribution dist(0l, std::min(S3Request::max_timeout.count(), req->backoffTimeout));
+        const auto dt = std::chrono::milliseconds(dist(rng));
+        std::cerr << "Got status " << S3_get_status_name(status) << " while running request " 
+          << *(req->req) << ", will retry in " << dt.count() << "ms\n";
+        if ( req->async ) {
+          req->submit_after = std::chrono::steady_clock::now() + dt;
         } else {
-          std::cerr << "Got status " << S3_get_status_name(status) << " while running request " << *(req->req) << ", retrying\n";
+          // TODO: better option?
+          std::this_thread::sleep_for(dt);
         }
         req->put_offset = 0;
         req->retries_executed++;
+        req->backoffTimeout *= 2;
         if ( req->async ) {
           instance().requests_.push(req);
         } else {
@@ -223,6 +235,7 @@ class S3LibWrapper {
           req->req->status = S3Request::Status::ok;
           break;
         default:
+          std::cerr << "Got status " << S3_get_status_name(status) << " at end request " << *(req->req) << "\n";
           req->req->status = S3Request::Status::error;
       }
       req->done();

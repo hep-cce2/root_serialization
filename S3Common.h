@@ -18,10 +18,11 @@ class S3Request {
   public:
     enum class Type {undef, get, put};
     enum class Status {waiting, ok, error};
+    static constexpr std::chrono::milliseconds default_timeout{5000};
     static constexpr std::chrono::milliseconds max_timeout{60000};
 
     S3Request() = delete;
-    S3Request(Type iType, const std::string& iKey, std::chrono::milliseconds iTimeout=std::chrono::milliseconds(1000), int iRetries=5):
+    S3Request(Type iType, const std::string& iKey, std::chrono::milliseconds iTimeout=default_timeout, int iRetries=5):
       type{iType}, key{iKey}, timeout{iTimeout}, retries{iRetries} {};
 
     const Type type;
