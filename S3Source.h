@@ -20,15 +20,17 @@
 namespace cce::tf {
 class DelayedProductStripeRetriever {
   public:
-    DelayedProductStripeRetriever(S3ConnectionRef conn, std::string name, size_t globalOffset):
+    DelayedProductStripeRetriever(const S3ConnectionRef& conn, std::string name, size_t globalOffset):
       conn_(conn), name_(name), globalOffset_(globalOffset), state_{State::unretrieved} {};
     void fetch(TaskHolder&& callback) const;
     std::string_view bufferAt(size_t globalEventIndex) const;
     ~DelayedProductStripeRetriever() {};
+    size_t globalOffset() const { return globalOffset_; };
+    bool wasFetched() const { return state_ != State::unretrieved; };
     std::chrono::microseconds decompressTime() const { return decompressTime_; }
 
   private:
-    S3ConnectionRef conn_;
+    const S3ConnectionRef conn_;
     std::string name_;
     size_t globalOffset_;
 
@@ -41,6 +43,22 @@ class DelayedProductStripeRetriever {
     mutable std::chrono::microseconds decompressTime_{0};
 };
 
+class ProductStripeGenerator {
+  public:
+    ProductStripeGenerator(const S3ConnectionRef& conn, const std::string& prefix, unsigned int flushSize, size_t globalIndexStart, size_t globalIndexEnd);
+    std::shared_ptr<const DelayedProductStripeRetriever> stripeFor(size_t globalEventIndex);
+    std::chrono::microseconds decompressTime() const { return decompressTime_; };
+
+  private:
+    const S3ConnectionRef conn_;
+    const std::string prefix_;
+    const unsigned int flushSize_;
+    size_t globalIndexStart_, globalIndexEnd_;
+    std::shared_ptr<const DelayedProductStripeRetriever> currentStripe_;
+    std::shared_ptr<const DelayedProductStripeRetriever> nextStripe_;
+    std::chrono::microseconds decompressTime_{0};
+    std::unique_ptr<tbb::task_group> prefetch_group_;
+};
 
 class S3DelayedRetriever : public DelayedProductRetriever {
   public:
@@ -75,7 +93,7 @@ class S3DelayedRetriever : public DelayedProductRetriever {
 
 class S3Source : public SharedSourceBase {
   public:
-    S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, unsigned long long iNEvents, S3ConnectionRef conn);
+    S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, unsigned long long iNEvents, const S3ConnectionRef& conn);
     S3Source(S3Source&&) = delete;
     S3Source(S3Source const&) = delete;
     ~S3Source() = default;
@@ -105,10 +123,9 @@ class S3Source : public SharedSourceBase {
     size_t nextEventStripe_ = 0;
     size_t nextEventInStripe_ = 0;
     objstripe::EventStripe currentEventStripe_;
-    std::vector<std::shared_ptr<const DelayedProductStripeRetriever>> currentProductStripes_;
+    std::vector<ProductStripeGenerator> productRetrievers_;
     std::vector<S3DelayedRetriever> laneRetrievers_;
     std::chrono::microseconds readTime_;
-    std::chrono::microseconds decompressTime_{0};
 };
 }
 

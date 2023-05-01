@@ -21,7 +21,7 @@ size_t zstd_perthread_decompress(void* dst, size_t dstCapacity, const void* src,
   return ZSTD_decompressDCtx(holder.ctx, dst, dstCapacity, src, compressedSize);
 }
 
-void zstd_decompress(std::string& blob, std::string& out, size_t dSize) {
+void zstd_decompress(const std::string& blob, std::string& out, size_t dSize) {
   out.resize(dSize);
   size_t status = ZSTD_decompress(out.data(), out.size(), blob.data(), blob.size());
   // size_t status = zstd_perthread_decompress(out.data(), out.size(), blob.data(), blob.size());
@@ -31,12 +31,10 @@ void zstd_decompress(std::string& blob, std::string& out, size_t dSize) {
   if (status < dSize) {
     std::cerr <<"ERROR in decompression, expected " << dSize << " bytes but only got " << status << std::endl;
   }
-  blob.clear();
-  blob.shrink_to_fit();
 }
 
 // /cvmfs/cms.cern.ch/slc7_amd64_gcc10/external/xz/5.2.5-d6fed2038c4e8d6e04531d1adba59f37
-void lzma_decompress(std::string& blob, std::string& out, size_t dSize) {
+void lzma_decompress(const std::string& blob, std::string& out, size_t dSize) {
   lzma_stream strm = LZMA_STREAM_INIT;
   lzma_ret ret = lzma_stream_decoder(&strm, UINT64_MAX, 0);
   if (ret != LZMA_OK) { throw std::runtime_error("Could not initialize LZMA encoder"); }
@@ -57,14 +55,12 @@ void lzma_decompress(std::string& blob, std::string& out, size_t dSize) {
   if ( strm.avail_out > 0 ) {
     std::cerr <<"ERROR in decompression, expected " << dSize << " bytes but only got " << dSize - strm.avail_out << std::endl;
   }
-  blob.clear();
-  blob.shrink_to_fit();
 }
 
-void decompress_stripe(const objstripe::Compression& setting, std::string& blob, std::string& out, size_t dSize) {
+void decompress_stripe(const objstripe::Compression& setting, const std::string& blob, std::string& out, size_t dSize) {
   switch ( setting.type() ) {
     case objstripe::CompressionType::kNone:
-      std::swap(blob, out);
+      out = blob;
       break;
     case objstripe::CompressionType::kZSTD:
       ::zstd_decompress(blob, out, dSize);
@@ -96,7 +92,7 @@ void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
             offsets_.push_back(nbytes);
           }
           assert(offsets_.size() == data_.counts_size() + 1);
-          ::decompress_stripe(data_.compression(), *data_.mutable_content(), content_, nbytes);
+          ::decompress_stripe(data_.compression(), data_.content(), content_, nbytes);
           assert(nbytes == content_.size());
           data_.clear_content();
           decompressTime_ = std::chrono::duration_cast<decltype(decompressTime_)>(std::chrono::high_resolution_clock::now() - start);
@@ -121,6 +117,41 @@ std::string_view DelayedProductStripeRetriever::bufferAt(size_t globalEventIndex
   size_t bstart = offsets_[iOffset];
   size_t bstop = offsets_[iOffset+1];
   return {&content_[bstart], bstop - bstart};
+}
+
+ProductStripeGenerator::ProductStripeGenerator(const S3ConnectionRef& conn, const std::string& prefix, unsigned int flushSize, size_t globalIndexStart, size_t globalIndexEnd) :
+  conn_(conn), prefix_(prefix), flushSize_(flushSize), globalIndexStart_(globalIndexStart), globalIndexEnd_(globalIndexEnd)
+{
+  auto indexThis = globalIndexStart - (globalIndexStart % flushSize_);
+  auto indexNext = indexThis + flushSize_;
+  currentStripe_ = std::make_shared<const DelayedProductStripeRetriever>(conn_, prefix_ + "/" + std::to_string(indexThis), indexThis);
+  nextStripe_ = std::make_shared<const DelayedProductStripeRetriever>(conn_, prefix_ + "/" + std::to_string(indexNext), indexNext);
+  prefetch_group_ = std::make_unique<tbb::task_group>();
+}
+
+std::shared_ptr<const DelayedProductStripeRetriever>
+ProductStripeGenerator::stripeFor(size_t globalEventIndex) {
+  assert(globalEventIndex >= globalIndexStart_ and globalEventIndex < globalIndexEnd_);
+  if ( globalEventIndex == nextStripe_->globalOffset() ) {
+    auto indexNext = globalEventIndex + flushSize_;
+    auto new_ps = std::make_shared<const DelayedProductStripeRetriever>(conn_, prefix_ + "/" + std::to_string(indexNext), indexNext);
+    // record decompress time of old stripe
+    decompressTime_ += currentStripe_->decompressTime();
+    // shuffle new_ps -> nextStripe_ -> currentStripe_
+    std::swap(nextStripe_, currentStripe_);
+    std::swap(new_ps, nextStripe_);
+  }
+  if ( 
+      currentStripe_->wasFetched()
+      and ~nextStripe_->wasFetched()
+      and (globalEventIndex % flushSize_ >= flushSize_ / 2)
+      and (globalEventIndex + flushSize_ < globalIndexEnd_)
+      )
+  {
+    // somewhere in the middle of current stripe, prefetch next
+    nextStripe_->fetch(TaskHolder(*prefetch_group_, make_functor_task([](){})));
+  }
+  return currentStripe_;
 }
 
 S3DelayedRetriever::S3DelayedRetriever(objstripe::ObjectStripeIndex const& index, DeserializeStrategy strategy):
@@ -167,7 +198,7 @@ void S3DelayedRetriever::getAsync(DataProductRetriever& product, int index, Task
   stripes_[index]->fetch(std::move(fetchCallback));
 }
 
-S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, unsigned long long iNEvents, S3ConnectionRef conn):
+S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, unsigned long long iNEvents, const S3ConnectionRef& conn):
   SharedSourceBase(iNEvents),
   objPrefix_(std::move(iObjPrefix)),
   verbose_(iVerbose),
@@ -200,7 +231,10 @@ S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, u
       << index_.totalevents() << " vs. " << iNEvents << ". Will read all available events instead.\n";
   }
 
-  currentProductStripes_.resize(index_.products_size());
+  productRetrievers_.reserve(index_.products_size());
+  for(const auto& productInfo : index_.products()) {
+    productRetrievers_.emplace_back(conn_, objPrefix_ + "/" + productInfo.productname(), productInfo.flushsize(), 0ul, index_.totalevents());
+  }
  
   laneRetrievers_.reserve(iNLanes);
   for(unsigned int i = 0; i< iNLanes; ++i) {
@@ -242,16 +276,15 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
         // default-constructed currentEventStripe_ will have size zero, so 0, 0 will load first stripe
         if(nextEventInStripe_ == currentEventStripe_.events_size()) {
           // Need to read ahead
-          // TODO: perhaps not the best idea to clobber index_? At least for now we don't need it again
-          auto* stripeData = index_.mutable_packedeventstripes(nextEventStripe_);
+          const auto& stripeData = index_.packedeventstripes(nextEventStripe_);
           if ( index_.has_eventstripecompression() ) {
             auto dsize = index_.eventstripesizes(nextEventStripe_);
             std::string decompressedStripe;
             decompressedStripe.resize(dsize);
-            ::decompress_stripe(index_.eventstripecompression(), *stripeData, decompressedStripe, dsize);
+            ::decompress_stripe(index_.eventstripecompression(), stripeData, decompressedStripe, dsize);
             currentEventStripe_.ParseFromString(decompressedStripe);
           } else {
-            currentEventStripe_.ParseFromString(*stripeData);
+            currentEventStripe_.ParseFromString(stripeData);
           }
           nextEventStripe_++;
           nextEventInStripe_ = 0;
@@ -261,26 +294,8 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
         auto& retriever = laneRetrievers_[iLane];
         size_t globalEventIndex = event.offset();
 
-        auto productinfo = std::begin(index_.products());
-        size_t i{0};
-        for (auto& ps : currentProductStripes_) {
-          const auto& productinfo = index_.products(i);
-          if ( nextEventInStripe_ % productinfo.flushsize() == 0 ) {
-            auto new_ps = std::make_shared<const DelayedProductStripeRetriever>(
-                conn_,
-                objPrefix_ + "/" + productinfo.productname() + "/" + std::to_string(globalEventIndex),
-                globalEventIndex
-                );
-            if ( verbose_ >= 2 ) {
-              std::cout << "setting lane " << iLane << "to read stripe " <<
-                objPrefix_ + "/" + productinfo.productname() + "/" + std::to_string(globalEventIndex) << "\n";
-            }
-            std::swap(ps, new_ps);
-            // record decompress time of old stripe
-            if ( new_ps ) decompressTime_ += new_ps->decompressTime();
-          }
-          retriever.setStripe(i, ps);
-          i++;
+        for (size_t i=0; i < productRetrievers_.size(); ++i) {
+          retriever.setStripe(i, productRetrievers_[i].stripeFor(globalEventIndex));
         }
 
         retriever.setEvent(globalEventIndex, {event.run(), event.lumi(), event.event()});
@@ -304,7 +319,11 @@ std::chrono::microseconds S3Source::serialReadTime() const {
 }
 
 std::chrono::microseconds S3Source::decompressTime() const {
-  return decompressTime_;
+  auto time = std::chrono::microseconds::zero();
+  for(auto const& p : productRetrievers_) {
+    time += p.decompressTime();
+  }
+  return time;
 }
 
 std::chrono::microseconds S3Source::deserializeTime() const {
