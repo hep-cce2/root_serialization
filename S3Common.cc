@@ -205,6 +205,7 @@ class S3LibWrapper {
 
     static void responseCompleteCallback(S3Status status, const S3ErrorDetails *error, void *callbackData) {
       auto req = static_cast<S3RequestWrapper*>(callbackData);
+      auto now = std::chrono::steady_clock::now();
       if ( S3_status_is_retryable(status) && req->retries_executed < req->req->retries ) {
         // e.g. S3StatusErrorRequestTimeout or ErrorSlowDown
         // Run backoff algo, https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
@@ -214,7 +215,7 @@ class S3LibWrapper {
         std::cerr << "Got status " << S3_get_status_name(status) << " while running request " 
           << *(req->req) << ", will retry in " << dt.count() << "ms\n";
         if ( req->async ) {
-          req->submit_after = std::chrono::steady_clock::now() + dt;
+          req->submit_after = now + dt;
         } else {
           // TODO: better option?
           std::this_thread::sleep_for(dt);
@@ -233,6 +234,11 @@ class S3LibWrapper {
       switch ( status ) {
         case S3StatusOK:
           req->req->status = S3Request::Status::ok;
+          std::cerr << ((req->req->type == S3Request::Type::get) ? "get: " : "put: ")
+            + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - req->submit_after).count())
+            + " " + std::to_string(req->req->buffer.size())
+            + " " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count())
+            + "\n";
           break;
         default:
           std::cerr << "Got status " << S3_get_status_name(status) << " at end request " << *(req->req) << "\n";
@@ -280,7 +286,7 @@ class S3LibWrapper {
 
   private:
     S3Status initStatus_;
-    int asyncRequestLimit_{512}; // no more than FD_SETSIZE (1024)
+    int asyncRequestLimit_{64}; // no more than FD_SETSIZE (1024)
     int asyncAddRequestLimit_{64};
     std::thread loop_;
     std::atomic<bool> running_;
