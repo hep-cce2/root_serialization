@@ -269,13 +269,19 @@ void S3Outputer::collateProducts(
 
   TaskHolder productsDoneCallback(
     // make lambda and call, since move assignment is disabled
-    [this, cb=std::move(iCallback)]() mutable {
+    // (copy callback so it lasts duration of this scope)
+    [this, cb=iCallback]() mutable {
       if ( currentEventStripe_.events_size() == eventFlushSize_ ) {
         objstripe::EventStripe stripeOut;
         stripeOut.mutable_events()->Reserve(eventFlushSize_);
         std::swap(currentEventStripe_, stripeOut);
-        return TaskHolder(*cb.group(), make_functor_task(
-            [this, stripeOut=std::move(stripeOut), callback=std::move(cb)]() mutable {
+        std::cerr << "flush " + std::to_string(numFireAndForgetCollates_)
+            + " " + std::to_string(std::chrono::system_clock::now().time_since_epoch() / std::chrono::milliseconds(1))
+            + "\n";
+        auto nextCallback = ( numFireAndForgetCollates_ < maxFireAndForgetCollates_ ) ?
+          numFireAndForgetCollates_++, TaskHolder(*cb.group(), make_functor_task([this]() mutable {numFireAndForgetCollates_--;})) : std::move(cb);
+        return TaskHolder(*nextCallback.group(), make_functor_task(
+            [this, stripeOut=std::move(stripeOut), callback=std::move(nextCallback)]() mutable {
               if(verbose_ >= 2) { std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n"; }
               flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback)]() {
                   flushEventStripe(stripeOut, std::move(callback));
@@ -353,7 +359,7 @@ void S3Outputer::appendProductBuffer(
           std::cerr << "failed to write product buffer " << *req << std::endl;
         }
       }));
-    conn_->submit(std::move(req), std::move(putDoneTask), true);
+    conn_->submit(std::move(req), std::move(putDoneTask));
 
     buf.stripe_.clear_counts();
     buf.stripe_.clear_content();
@@ -390,9 +396,10 @@ void S3Outputer::flushEventStripe(const objstripe::EventStripe& stripe, TaskHold
   auto putDoneTask = TaskHolder(*iCallback.group(), make_functor_task([req, callback=std::move(iCallback)]() {
       if ( req->status != S3Request::Status::ok ) {
         std::cerr << "failed to write product buffer index" << std::endl;
+        // TODO: if several failures, maybe exit?
       }
     }));
-  conn_->submit(std::move(req), std::move(putDoneTask), true);
+  conn_->submit(std::move(req), std::move(putDoneTask));
   flushTime_ += std::chrono::duration_cast<decltype(flushTime_)>(std::chrono::high_resolution_clock::now() - start);
 }
 

@@ -113,6 +113,8 @@ private:
   mutable size_t eventGlobalOffset_{0};
   mutable objstripe::EventStripe currentEventStripe_{};
   mutable std::chrono::microseconds collateTime_;
+  constexpr static unsigned int maxFireAndForgetCollates_{4};
+  mutable std::atomic<unsigned int> numFireAndForgetCollates_{0};
 
   // only modified in appendProductBuffer()
   mutable std::vector<ProductOutputBuffer> buffers_;

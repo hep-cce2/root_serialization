@@ -100,7 +100,7 @@ void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
           waiters_.doneWaiting();
         } else { throw std::runtime_error("Could not retrieve ProductStripe for key " + name_); }
       }));
-    conn_->submit(std::move(req), std::move(getDoneTask), true);
+    conn_->submit(std::move(req), std::move(getDoneTask));
   } else if (this_state == State::retrieved ) {
     return;
   } else {
@@ -218,7 +218,7 @@ S3Source::S3Source(unsigned int iNLanes, std::string iObjPrefix, int iVerbose, u
         }
         else { throw std::runtime_error("Could not retrieve index in S3Source construction"); }
       }));
-    conn_->submit(std::move(req), std::move(getDoneTask), false);
+    conn_->submit(std::move(req), std::move(getDoneTask));
     group.wait();
   }
 

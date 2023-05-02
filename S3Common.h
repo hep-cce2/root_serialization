@@ -47,7 +47,7 @@ class S3Connection {
         std::string_view iSecurityToken
         );
 
-    void submit(std::shared_ptr<S3Request> req, TaskHolder&& callback, bool async) const;
+    void submit(std::shared_ptr<S3Request> req, TaskHolder&& callback) const;
     std::chrono::microseconds blockingTime() const { return std::chrono::microseconds(blockingTime_.load()); }
 
   private:
