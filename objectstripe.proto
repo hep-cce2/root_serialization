@@ -46,6 +46,12 @@ message EventStripe {
 
   repeated Event events = 1;
   // TODO: store product flushSize here?
+
+  message ProductGroup {
+    repeated string names = 1;
+  }
+
+  repeated ProductGroup groups = 2;
 }
 
 message ProductStripe {
@@ -53,4 +59,8 @@ message ProductStripe {
   optional bytes content = 2;
   optional uint64 globalOffset = 3;
   optional Compression compression = 4;
+}
+
+message ProductGroupStripe {
+  repeated ProductStripe products = 2;
 }

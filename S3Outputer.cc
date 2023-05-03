@@ -214,16 +214,11 @@ void S3Outputer::printSummary() const {
     tbb::task_group group;
     {
       TaskHolder finalTask(group, make_functor_task([&group, task=group.defer([](){})]() mutable { group.run(std::move(task)); }));
-      TaskHolder productsDone(group, make_functor_task(
-          [this, stripeOut=std::move(currentEventStripe_), callback=std::move(finalTask)]() mutable {
-            flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback)]() {
-                flushEventStripe(stripeOut, std::move(callback), true);
-              });
-          }
-        ));
+      SmallBufferMapPtr smallbuffers = std::make_shared<SmallBufferMapPtr::element_type>();
+      auto productsDoneCallback = makeProductsDoneCallback(finalTask, smallbuffers, true);
       for(auto& buf : buffers_) {
-        buf.appendQueue_.push(group, [this, &buf, cb=productsDone]() mutable {
-            appendProductBuffer(buf, {}, std::move(cb), true);
+        buf.appendQueue_.push(group, [this, &buf, cb=productsDoneCallback, smallbuffers]() mutable {
+            appendProductBuffer(buf, {}, std::move(cb), true, smallbuffers);
           });
       }
     }
@@ -258,7 +253,6 @@ void S3Outputer::collateProducts(
     TaskHolder iCallback
     ) const
 {
-  using namespace std::string_literals;
   auto start = std::chrono::high_resolution_clock::now();
   auto sev = currentEventStripe_.add_events();
   sev->set_offset(eventGlobalOffset_++);
@@ -267,48 +261,76 @@ void S3Outputer::collateProducts(
   sev->set_event(iEventID.event);
   if (verbose_ >= 2) { std::cout << sev->DebugString(); }
 
-  TaskHolder productsDoneCallback(
-    // make lambda and call, since move assignment is disabled
-    // (copy callback so it lasts duration of this scope)
-    [this, cb=iCallback]() mutable {
-      if ( currentEventStripe_.events_size() == eventFlushSize_ ) {
-        objstripe::EventStripe stripeOut;
-        stripeOut.mutable_events()->Reserve(eventFlushSize_);
-        std::swap(currentEventStripe_, stripeOut);
-        std::cerr << "flush " + std::to_string(numFireAndForgetCollates_)
-            + " " + std::to_string(std::chrono::system_clock::now().time_since_epoch() / std::chrono::milliseconds(1))
-            + "\n";
-        auto nextCallback = ( numFireAndForgetCollates_ < maxFireAndForgetCollates_ ) ?
-          numFireAndForgetCollates_++, TaskHolder(*cb.group(), make_functor_task([this]() mutable {numFireAndForgetCollates_--;})) : std::move(cb);
-        return TaskHolder(*nextCallback.group(), make_functor_task(
-            [this, stripeOut=std::move(stripeOut), callback=std::move(nextCallback)]() mutable {
-              if(verbose_ >= 2) { std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n"; }
-              flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback)]() {
-                  flushEventStripe(stripeOut, std::move(callback));
-                });
-            }
-          ));
-      }
-      return cb;
-    }()
-  );
+  SmallBufferMapPtr smallbuffers = std::make_shared<SmallBufferMapPtr::element_type>();
+  // pass a copy of iCallback
+  auto productsDoneCallback = makeProductsDoneCallback(iCallback, smallbuffers, false);
 
   auto buf = std::begin(buffers_);
   for (const auto& s : iSerializers) {
     const std::string_view blob(s.blob().data(), s.blob().size());
-    buf->appendQueue_.push(*productsDoneCallback.group(), [this, buf, blob, cb=productsDoneCallback]() mutable {
-        appendProductBuffer(*buf, blob, std::move(cb));
+    buf->appendQueue_.push(*productsDoneCallback.group(), [this, buf, blob, cb=productsDoneCallback, smallbuffers]() mutable {
+        appendProductBuffer(*buf, blob, std::move(cb), false, smallbuffers);
       });
     buf++;
   }
   collateTime_ += std::chrono::duration_cast<decltype(collateTime_)>(std::chrono::high_resolution_clock::now() - start);
 }
 
+TaskHolder S3Outputer::makeProductsDoneCallback(TaskHolder iCallback, SmallBufferMapPtr smallbuffers, bool last) const {
+  using namespace std::string_literals;
+  if ( (currentEventStripe_.events_size() == eventFlushSize_) || last ) {
+    objstripe::EventStripe stripeOut;
+    stripeOut.mutable_events()->Reserve(eventFlushSize_);
+    std::swap(currentEventStripe_, stripeOut);
+    std::cerr << "flush " + std::to_string(numFireAndForgetCollates_)
+        + " " + std::to_string(std::chrono::system_clock::now().time_since_epoch() / std::chrono::milliseconds(1))
+        + "\n";
+    auto nextCallback = ( (numFireAndForgetCollates_ < maxFireAndForgetCollates_) || last ) ?
+      numFireAndForgetCollates_++, TaskHolder(*iCallback.group(), make_functor_task([this]() mutable {numFireAndForgetCollates_--;})) : std::move(iCallback);
+    return TaskHolder(*nextCallback.group(), make_functor_task(
+        [this, stripeOut=std::move(stripeOut), callback=std::move(nextCallback), smallbuffers]() mutable {
+          if(verbose_ >= 2) { std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n"; }
+          // merge buffers by greedy algorithm
+          std::sort(smallbuffers->begin(), smallbuffers->end(), [](const auto &a, const auto &b){ return a.second.content().size() > b.second.content().size(); });
+          size_t iGroup{0};
+          auto it = smallbuffers->begin();
+          objstripe::ProductGroupStripe gout;
+          do {
+            size_t nbytes{0};
+            auto* group = stripeOut.add_groups();
+            while ( (nbytes < productBufferFlushMinBytes_) and (it != smallbuffers->end()) ) {
+              nbytes += it->second.content().size();
+              group->mutable_names()->Add(std::move(it->first));
+              gout.mutable_products()->Add(std::move(it->second));
+              it++;
+            }
+            auto req = std::make_shared<S3Request>(S3Request::Type::put, objPrefix_ + "/group" + std::to_string(iGroup) + "/" + std::to_string(stripeOut.events(0).offset()));
+            gout.SerializeToString(&req->buffer);
+            auto putDoneTask = TaskHolder(*callback.group(), make_functor_task([req, callback]() {
+                if ( req->status != S3Request::Status::ok ) {
+                  std::cerr << "failed to write product buffer " << *req << std::endl;
+                }
+              }));
+            conn_->submit(std::move(req), std::move(putDoneTask));
+            iGroup++;
+            gout.clear_products();
+          } while ( it != smallbuffers->end() );
+          flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback)]() {
+              flushEventStripe(stripeOut, std::move(callback));
+            });
+        }
+      ));
+  }
+  return iCallback;
+}
+
+
 void S3Outputer::appendProductBuffer(
     ProductOutputBuffer& buf,
     const std::string_view blob,
     TaskHolder iCallback,
-    bool last
+    bool last,
+    SmallBufferMapPtr smallbuffers
     ) const
 {
   using namespace std::string_literals;
@@ -330,8 +352,8 @@ void S3Outputer::appendProductBuffer(
 
   // first flush when we exceed min size and have an even divisor of eventFlushSize_
   // subsequent flush when we reach productFlushSize
-  // always flush when we reach eventFlushSize_ (for buffers that never get big enough)
   // flush if last call and we have something to write
+  // for buffers that never get big enough, flush when we reach eventFlushSize_ but to a merge queue
   if (
       (
         (buf.info_->flushsize() == 0)
@@ -339,8 +361,8 @@ void S3Outputer::appendProductBuffer(
         && (eventFlushSize_ % bufferNevents == 0)
       )
       || (bufferNevents == buf.info_->flushsize())
-      || (bufferNevents == eventFlushSize_)
       || (last && bufferNevents > 0)
+      || (bufferNevents == eventFlushSize_)
       )
   {
     buf.compressor_.flush(*buf.stripe_.mutable_content());
@@ -352,14 +374,20 @@ void S3Outputer::appendProductBuffer(
     }
 
     std::string name = buf.prefix_ + "/" + std::to_string(buf.stripe_.globaloffset());
-    auto req = std::make_shared<S3Request>(S3Request::Type::put, name);
-    buf.stripe_.SerializeToString(&req->buffer);
-    auto putDoneTask = TaskHolder(*iCallback.group(), make_functor_task([req, callback=std::move(iCallback)]() {
-        if ( req->status != S3Request::Status::ok ) {
-          std::cerr << "failed to write product buffer " << *req << std::endl;
-        }
-      }));
-    conn_->submit(std::move(req), std::move(putDoneTask));
+    if ( (bufferNevents == eventFlushSize_) && (bufferNbytes <= buf.info_->flushminbytes()) ) {
+      // too small buffer, put it on a merge queue
+      smallbuffers->push_back({name, buf.stripe_}); // TODO: swap
+      // leave iCallback alive til end of function
+    } else {
+      auto req = std::make_shared<S3Request>(S3Request::Type::put, name);
+      buf.stripe_.SerializeToString(&req->buffer);
+      auto putDoneTask = TaskHolder(*iCallback.group(), make_functor_task([req, callback=std::move(iCallback)]() {
+          if ( req->status != S3Request::Status::ok ) {
+            std::cerr << "failed to write product buffer " << *req << std::endl;
+          }
+        }));
+      conn_->submit(std::move(req), std::move(putDoneTask));
+    }
 
     buf.stripe_.clear_counts();
     buf.stripe_.clear_content();

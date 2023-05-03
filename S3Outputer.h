@@ -11,6 +11,7 @@
 
 #define TBB_PREVIEW_TASK_GROUP_EXTENSIONS 1 // for task_group::defer
 #include "tbb/task_group.h"
+#include "tbb/concurrent_vector.h"
 
 #include "OutputerBase.h"
 #include "EventIdentifier.h"
@@ -85,6 +86,8 @@ private:
     SerialTaskQueue appendQueue_{};
     std::chrono::microseconds appendTime_{0};
   };
+  // product buffer name, bytes
+  typedef std::shared_ptr<tbb::concurrent_vector<std::pair<std::string, objstripe::ProductStripe>>> SmallBufferMapPtr;
 
   // Plan:
   // productReadyAsync() is threadsafe because serializers_ is one per lane
@@ -94,7 +97,8 @@ private:
   // then collate() calls appendProductBuffer() with the above TaskHolder as callback (or original callback)
   // printSummary() takes care of the tails by setting last=true in the calls
   void collateProducts(EventIdentifier const& iEventID, SerializeStrategy const& iSerializers, TaskHolder iCallback) const;
-  void appendProductBuffer(ProductOutputBuffer& buf, const std::string_view blob, TaskHolder iCallback, bool last=false) const;
+  void appendProductBuffer(ProductOutputBuffer& buf, const std::string_view blob, TaskHolder iCallback, bool last, SmallBufferMapPtr smallbuffers) const;
+  TaskHolder makeProductsDoneCallback(TaskHolder iCallback, SmallBufferMapPtr smallbuffers, bool last) const;
   void flushEventStripe(const objstripe::EventStripe& stripe, TaskHolder iCallback, bool last=false) const;
 
   // configuration options
@@ -113,7 +117,7 @@ private:
   mutable size_t eventGlobalOffset_{0};
   mutable objstripe::EventStripe currentEventStripe_{};
   mutable std::chrono::microseconds collateTime_;
-  constexpr static unsigned int maxFireAndForgetCollates_{4};
+  constexpr static unsigned int maxFireAndForgetCollates_{0};
   mutable std::atomic<unsigned int> numFireAndForgetCollates_{0};
 
   // only modified in appendProductBuffer()
