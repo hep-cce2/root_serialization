@@ -18,29 +18,68 @@
 
 
 namespace cce::tf {
-class DelayedProductStripeRetriever {
+
+class WaitableFetch {
   public:
-    DelayedProductStripeRetriever(const S3ConnectionRef& conn, std::string name, size_t globalOffset):
-      conn_(conn), name_(name), globalOffset_(globalOffset), state_{State::unretrieved} {};
-    void fetch(TaskHolder&& callback) const;
-    std::string_view bufferAt(size_t globalEventIndex) const;
-    ~DelayedProductStripeRetriever() {};
-    size_t globalOffset() const { return globalOffset_; };
+    WaitableFetch(const S3ConnectionRef& conn, const std::string& name):
+      conn_(conn), name_(name), state_{State::unretrieved} {};
+    virtual ~WaitableFetch();
+    void fetch(TaskHolder&& callback);
     bool wasFetched() const { return state_ != State::unretrieved; };
-    std::chrono::microseconds decompressTime() const { return decompressTime_; }
+    virtual std::string_view bufferAt(size_t groupIdx, size_t iOffset) const = 0;
+    std::chrono::microseconds parseTime() const { return parseTime_; };
+
+  protected:
+    const std::string name_;
+    enum class State {unretrieved, retrieving, retrieved};
+    std::atomic<State> state_;
 
   private:
+    virtual void parse(const std::string& buffer) = 0;
+    WaitingTaskList waiters_{};
     const S3ConnectionRef conn_;
-    std::string name_;
-    size_t globalOffset_;
+    std::chrono::microseconds parseTime_{0};
+};
 
-    enum class State {unretrieved, retrieving, retrieved};
-    mutable std::atomic<State> state_;
-    mutable WaitingTaskList waiters_{};
-    mutable objstripe::ProductStripe data_{};
-    mutable std::vector<size_t> offsets_{};
-    mutable std::string content_{};
-    mutable std::chrono::microseconds decompressTime_{0};
+class WaitableFetchProductStripe : public WaitableFetch {
+  public:
+    using WaitableFetch::WaitableFetch;
+    std::string_view bufferAt(size_t groupIdx, size_t iOffset) const override;
+  private:
+    void parse(const std::string& buffer) override;
+    objstripe::ProductStripe data_;
+    std::vector<size_t> offsets_{};
+    std::string content_{};
+};
+
+class WaitableFetchProductGroupStripe : public WaitableFetch {
+  public:
+    using WaitableFetch::WaitableFetch;
+    std::string_view bufferAt(size_t groupIdx, size_t iOffset) const override;
+  private:
+    void parse(const std::string& buffer) override;
+    objstripe::ProductGroupStripe data_;
+    std::vector<std::vector<size_t>> offsets_{};
+    std::vector<std::string> content_{};
+};
+
+class DelayedProductStripeRetriever {
+  public:
+    // Note: for ProductStripes not in a ProductGroupStripe, groupIdx is ignored
+    DelayedProductStripeRetriever(const std::shared_ptr<WaitableFetch>& fetcher, size_t groupIdx, size_t globalOffset):
+      fetcher_(fetcher), groupIdx_(groupIdx), globalOffset_(globalOffset) {};
+    DelayedProductStripeRetriever(const S3ConnectionRef& conn, const std::string& name, size_t globalOffset):
+      fetcher_(std::make_shared<WaitableFetchProductStripe>(conn, name)), groupIdx_(0), globalOffset_(globalOffset) {};
+    void fetch(TaskHolder&& callback) const;
+    std::string_view bufferAt(size_t globalEventIndex) const;
+    size_t globalOffset() const { return globalOffset_; };
+    bool wasFetched() const { return fetcher_->wasFetched(); };
+    std::chrono::microseconds decompressTime() const { return fetcher_->parseTime(); }
+
+  private:
+    size_t groupIdx_;
+    size_t globalOffset_;
+    std::shared_ptr<WaitableFetch> fetcher_;
 };
 
 class ProductStripeGenerator {
@@ -123,6 +162,7 @@ class S3Source : public SharedSourceBase {
     size_t nextEventStripe_ = 0;
     size_t nextEventInStripe_ = 0;
     objstripe::EventStripe currentEventStripe_;
+    std::map<std::string, std::shared_ptr<const DelayedProductStripeRetriever>> productGroupMap_;
     std::vector<ProductStripeGenerator> productRetrievers_;
     std::vector<S3DelayedRetriever> laneRetrievers_;
     std::chrono::microseconds readTime_;

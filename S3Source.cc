@@ -70,9 +70,25 @@ void decompress_stripe(const objstripe::Compression& setting, const std::string&
       break;
   }
 }
+
+void parse_productstripe(objstripe::ProductStripe& stripe, std::vector<size_t>& offsets, std::string& content) {
+  offsets.reserve(stripe.counts_size() + 1);
+  size_t nbytes{0};
+  offsets.push_back(nbytes);
+  for (const auto& c : stripe.counts()) {
+    nbytes += c;
+    offsets.push_back(nbytes);
+  }
+  assert(offsets.size() == stripe.counts_size() + 1);
+  decompress_stripe(stripe.compression(), stripe.content(), content, nbytes);
+  assert(nbytes == content.size());
+  stripe.clear_content();
+}
 }
 
-void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
+WaitableFetch::~WaitableFetch() {}
+
+void WaitableFetch::fetch(TaskHolder&& callback) {
   auto this_state{State::unretrieved};
   if ( state_.compare_exchange_strong(this_state, State::retrieving) ) {
     auto req = std::make_shared<S3Request>(S3Request::Type::get, name_);
@@ -81,24 +97,11 @@ void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
     auto getDoneTask = TaskHolder(*group, make_functor_task([this, req]() {
         if ( req->status == S3Request::Status::ok ) {
           auto start = std::chrono::high_resolution_clock::now();
-          if ( not data_.ParseFromString(req->buffer) ) {
-            throw std::runtime_error("Could not deserialize ProductStripe for key " + name_);
-          }
-          offsets_.reserve(data_.counts_size() + 1);
-          size_t nbytes{0};
-          offsets_.push_back(nbytes);
-          for (const auto& c : data_.counts()) {
-            nbytes += c;
-            offsets_.push_back(nbytes);
-          }
-          assert(offsets_.size() == data_.counts_size() + 1);
-          ::decompress_stripe(data_.compression(), data_.content(), content_, nbytes);
-          assert(nbytes == content_.size());
-          data_.clear_content();
-          decompressTime_ = std::chrono::duration_cast<decltype(decompressTime_)>(std::chrono::high_resolution_clock::now() - start);
+          parse(req->buffer);
+          parseTime_ = std::chrono::duration_cast<decltype(parseTime_)>(std::chrono::high_resolution_clock::now() - start);
           state_ = State::retrieved;
           waiters_.doneWaiting();
-        } else { throw std::runtime_error("Could not retrieve ProductStripe for key " + name_); }
+        } else { throw std::runtime_error("Could not retrieve key " + name_); }
       }));
     conn_->submit(std::move(req), std::move(getDoneTask));
   } else if (this_state == State::retrieved ) {
@@ -108,15 +111,50 @@ void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
   }
 }
 
-std::string_view DelayedProductStripeRetriever::bufferAt(size_t globalEventIndex) const {
+std::string_view WaitableFetchProductStripe::bufferAt(size_t groupIdx, size_t iOffset) const {
   assert(state_ == State::retrieved);
-  assert(globalOffset_ == data_.globaloffset());
-  assert(globalOffset_ <= globalEventIndex);
-  size_t iOffset = globalEventIndex - globalOffset_;
-  assert(iOffset < data_.counts_size());
+  assert(groupIdx == 0);
+  assert(iOffset < offsets_.size() - 1);
   size_t bstart = offsets_[iOffset];
   size_t bstop = offsets_[iOffset+1];
   return {&content_[bstart], bstop - bstart};
+}
+
+void WaitableFetchProductStripe::parse(const std::string& buffer) {
+  if ( not data_.ParseFromString(buffer) ) {
+    throw std::runtime_error("Could not deserialize key " + name_);
+  }
+  ::parse_productstripe(data_, offsets_, content_);
+}
+
+std::string_view WaitableFetchProductGroupStripe::bufferAt(size_t groupIdx, size_t iOffset) const {
+  assert(state_ == State::retrieved);
+  assert(groupIdx < offsets_.size());
+  assert(iOffset < offsets_[groupIdx].size() - 1);
+  size_t bstart = offsets_[groupIdx][iOffset];
+  size_t bstop = offsets_[groupIdx][iOffset+1];
+  return {&content_[groupIdx][bstart], bstop - bstart};
+}
+
+void WaitableFetchProductGroupStripe::parse(const std::string& buffer) {
+  if ( not data_.ParseFromString(buffer) ) {
+    throw std::runtime_error("Could not deserialize key " + name_);
+  }
+  offsets_.resize(data_.products_size());
+  content_.resize(data_.products_size());
+  for(size_t i=0; i< data_.products_size(); ++i) {
+    ::parse_productstripe(*data_.mutable_products(i), offsets_[i], content_[i]);
+  }
+}
+
+void DelayedProductStripeRetriever::fetch(TaskHolder&& callback) const {
+  fetcher_->fetch(std::move(callback));
+}
+
+std::string_view DelayedProductStripeRetriever::bufferAt(size_t globalEventIndex) const {
+  assert(globalOffset_ <= globalEventIndex);
+  size_t iOffset = globalEventIndex - globalOffset_;
+  return fetcher_->bufferAt(groupIdx_, iOffset);
 }
 
 ProductStripeGenerator::ProductStripeGenerator(const S3ConnectionRef& conn, const std::string& prefix, unsigned int flushSize, size_t globalIndexStart, size_t globalIndexEnd) :
@@ -288,6 +326,18 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
           }
           nextEventStripe_++;
           nextEventInStripe_ = 0;
+
+          productGroupMap_.clear();
+          size_t eventStripeStart = currentEventStripe_.events(0).offset();
+          for (size_t iGroup=0; iGroup < currentEventStripe_.groups_size(); ++iGroup) {
+            const auto& group = currentEventStripe_.groups(iGroup);
+            auto fetcher = std::make_shared<WaitableFetchProductGroupStripe>(
+                conn_, objPrefix_ + "/group" + std::to_string(iGroup) + "/" + std::to_string(eventStripeStart)
+              );
+            for (size_t groupIdx=0; groupIdx < group.names_size(); groupIdx++) {
+              productGroupMap_[group.names(groupIdx)] = std::make_shared<const DelayedProductStripeRetriever>(fetcher, groupIdx, eventStripeStart);
+            }
+          }
         }
         const auto event = currentEventStripe_.events(nextEventInStripe_);
         if ( verbose_ >= 1 ) std::cout << event.DebugString() << "\n";
@@ -295,7 +345,12 @@ void S3Source::readEventAsync(unsigned int iLane, long iEventIndex, OptionalTask
         size_t globalEventIndex = event.offset();
 
         for (size_t i=0; i < productRetrievers_.size(); ++i) {
-          retriever.setStripe(i, productRetrievers_[i].stripeFor(globalEventIndex));
+          auto itgroup = productGroupMap_.find(index_.products(i).productname());
+          if ( itgroup != productGroupMap_.end() ) {
+            retriever.setStripe(i, itgroup->second);
+          } else {
+            retriever.setStripe(i, productRetrievers_[i].stripeFor(globalEventIndex));
+          }
         }
 
         retriever.setEvent(globalEventIndex, {event.run(), event.lumi(), event.event()});

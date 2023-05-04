@@ -61,7 +61,7 @@ class S3Outputer : public OutputerBase {
     index_.set_serializestrategy(objstripe::SerializeStrategy::kRoot);
     defaultCompression_.set_type(cType);
     defaultCompression_.set_level(cLevel);
-    index_.set_allocated_eventstripecompression(new objstripe::Compression(defaultCompression_));
+    index_.mutable_eventstripecompression()->CopyFrom(defaultCompression_);
     eventStripeCompressor_ = StreamCompressor(index_.eventstripecompression());
   }
 
@@ -76,7 +76,7 @@ private:
     ProductOutputBuffer(const std::string& prefix, objstripe::ProductInfo* info, const objstripe::Compression& comp) :
       prefix_{prefix}, info_{info}, compressor_{comp} {
         stripe_.set_content("");
-        stripe_.set_allocated_compression(new objstripe::Compression(compressor_.getCompression()));
+        stripe_.mutable_compression()->CopyFrom(compressor_.getCompression());
       };
 
     const std::string prefix_;
@@ -87,7 +87,7 @@ private:
     std::chrono::microseconds appendTime_{0};
   };
   // product buffer name, bytes
-  typedef std::shared_ptr<tbb::concurrent_vector<std::pair<std::string, objstripe::ProductStripe>>> SmallBufferMapPtr;
+  typedef std::shared_ptr<tbb::concurrent_vector<std::pair<std::string, objstripe::ProductStripe>>> SmallBuffers;
 
   // Plan:
   // productReadyAsync() is threadsafe because serializers_ is one per lane
@@ -97,8 +97,8 @@ private:
   // then collate() calls appendProductBuffer() with the above TaskHolder as callback (or original callback)
   // printSummary() takes care of the tails by setting last=true in the calls
   void collateProducts(EventIdentifier const& iEventID, SerializeStrategy const& iSerializers, TaskHolder iCallback) const;
-  void appendProductBuffer(ProductOutputBuffer& buf, const std::string_view blob, TaskHolder iCallback, bool last, SmallBufferMapPtr smallbuffers) const;
-  TaskHolder makeProductsDoneCallback(TaskHolder iCallback, SmallBufferMapPtr smallbuffers, bool last) const;
+  void appendProductBuffer(ProductOutputBuffer& buf, const std::string_view blob, TaskHolder iCallback, bool last, SmallBuffers smallbuffers) const;
+  TaskHolder makeProductsDoneCallback(TaskHolder iCallback, SmallBuffers smallbuffers, bool last) const;
   void flushEventStripe(const objstripe::EventStripe& stripe, TaskHolder iCallback, bool last=false) const;
 
   // configuration options
