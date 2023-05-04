@@ -63,6 +63,8 @@ class S3Outputer : public OutputerBase {
     defaultCompression_.set_level(cLevel);
     index_.mutable_eventstripecompression()->CopyFrom(defaultCompression_);
     eventStripeCompressor_ = StreamCompressor(index_.eventstripecompression());
+
+    tails_group_ = std::make_unique<tbb::task_group>();
   }
 
   void setupForLane(unsigned int iLaneIndex, std::vector<DataProductRetriever> const& iDPs) final;
@@ -117,8 +119,9 @@ private:
   mutable size_t eventGlobalOffset_{0};
   mutable objstripe::EventStripe currentEventStripe_{};
   mutable std::chrono::microseconds collateTime_;
-  constexpr static unsigned int maxFireAndForgetCollates_{0};
+  constexpr static unsigned int maxFireAndForgetCollates_{4};
   mutable std::atomic<unsigned int> numFireAndForgetCollates_{0};
+  std::unique_ptr<tbb::task_group> tails_group_; // for fire-and-forget and last flush
 
   // only modified in appendProductBuffer()
   mutable std::vector<ProductOutputBuffer> buffers_;

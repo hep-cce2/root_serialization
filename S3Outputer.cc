@@ -212,18 +212,17 @@ void S3Outputer::outputAsync(unsigned int iLaneIndex, EventIdentifier const& iEv
 void S3Outputer::printSummary() const {
   {
     // drain all buffers
-    tbb::task_group group;
     {
-      TaskHolder finalTask(group, make_functor_task([&group, task=group.defer([](){})]() mutable { group.run(std::move(task)); }));
+      TaskHolder finalTask(*tails_group_, make_functor_task([this, task=tails_group_->defer([](){})]() mutable { tails_group_->run(std::move(task)); }));
       SmallBuffers smallbuffers = std::make_shared<SmallBuffers::element_type>();
       auto productsDoneCallback = makeProductsDoneCallback(finalTask, smallbuffers, true);
       for(auto& buf : buffers_) {
-        buf.appendQueue_.push(group, [this, &buf, cb=productsDoneCallback, smallbuffers]() mutable {
+        buf.appendQueue_.push(*tails_group_, [this, &buf, cb=productsDoneCallback, smallbuffers]() mutable {
             appendProductBuffer(buf, {}, std::move(cb), true, smallbuffers);
           });
       }
     }
-    group.wait();
+    tails_group_->wait();
   }
 
   if(verbose_ >= 2) {
@@ -287,7 +286,11 @@ TaskHolder S3Outputer::makeProductsDoneCallback(TaskHolder iCallback, SmallBuffe
         + " " + std::to_string(std::chrono::system_clock::now().time_since_epoch() / std::chrono::milliseconds(1))
         + "\n";
     auto nextCallback = ( (numFireAndForgetCollates_ < maxFireAndForgetCollates_) and ~last ) ?
-      numFireAndForgetCollates_++, TaskHolder(*iCallback.group(), make_functor_task([this]() mutable {numFireAndForgetCollates_--;})) : std::move(iCallback);
+      numFireAndForgetCollates_++,
+      TaskHolder(
+          *tails_group_,
+          make_functor_task([this, task=tails_group_->defer([](){})]() mutable {numFireAndForgetCollates_--; tails_group_->run(std::move(task));})
+        ) : std::move(iCallback);
     return TaskHolder(*nextCallback.group(), make_functor_task(
         [this, stripeOut=std::move(stripeOut), callback=std::move(nextCallback), smallbuffers]() mutable {
           if(verbose_ >= 2) { std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n"; }
