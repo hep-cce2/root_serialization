@@ -66,10 +66,10 @@ class WaitableFetchProductGroupStripe : public WaitableFetch {
 class DelayedProductStripeRetriever {
   public:
     // Note: for ProductStripes not in a ProductGroupStripe, groupIdx is ignored
-    DelayedProductStripeRetriever(const std::shared_ptr<WaitableFetch>& fetcher, size_t groupIdx, size_t globalOffset):
-      fetcher_(fetcher), groupIdx_(groupIdx), globalOffset_(globalOffset) {};
-    DelayedProductStripeRetriever(const S3ConnectionRef& conn, const std::string& name, size_t globalOffset):
-      fetcher_(std::make_shared<WaitableFetchProductStripe>(conn, name)), groupIdx_(0), globalOffset_(globalOffset) {};
+    DelayedProductStripeRetriever(const std::shared_ptr<WaitableFetch>& fetcher, size_t groupIdx, size_t globalOffset, size_t flushSize):
+      fetcher_(fetcher), groupIdx_(groupIdx), globalOffset_(globalOffset), flushSize_(flushSize) {};
+    DelayedProductStripeRetriever(const S3ConnectionRef& conn, const std::string& name, size_t globalOffset, size_t flushSize):
+      fetcher_(std::make_shared<WaitableFetchProductStripe>(conn, name)), groupIdx_(0), globalOffset_(globalOffset), flushSize_(flushSize) {};
     void fetch(TaskHolder&& callback) const;
     std::string_view bufferAt(size_t globalEventIndex) const;
     size_t globalOffset() const { return globalOffset_; };
@@ -77,8 +77,9 @@ class DelayedProductStripeRetriever {
     std::chrono::microseconds decompressTime() const { return fetcher_->parseTime(); }
 
   private:
-    size_t groupIdx_;
-    size_t globalOffset_;
+    const size_t groupIdx_;
+    const size_t globalOffset_;
+    const size_t flushSize_;
     std::shared_ptr<WaitableFetch> fetcher_;
 };
 
@@ -92,7 +93,8 @@ class ProductStripeGenerator {
     const S3ConnectionRef conn_;
     const std::string prefix_;
     const unsigned int flushSize_;
-    size_t globalIndexStart_, globalIndexEnd_;
+    const size_t globalIndexStart_;
+    const size_t globalIndexEnd_;
     std::shared_ptr<const DelayedProductStripeRetriever> currentStripe_;
     std::shared_ptr<const DelayedProductStripeRetriever> nextStripe_;
     std::chrono::microseconds decompressTime_{0};
