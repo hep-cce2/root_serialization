@@ -10,6 +10,7 @@
 #include <sys/select.h>
 
 #include "libs3.h"
+#include <curl/curl.h>
 #include "tbb/task_arena.h"
 #include "tbb/concurrent_queue.h"
 #include "S3Common.h"
@@ -81,6 +82,10 @@ class S3LibWrapper {
       int max_fd, activeRequests{0};
       int topfds{0}, topreq{0};
       S3_create_request_context(&ctx);
+      // For now we do not enable peer verification because CURL is loading the CA bundle per connection https://github.com/curl/curl/pull/9620
+      // S3_set_request_context_verify_peer(ctx, 1);
+      // auto status = curl_easy_setopt(curl, CURLOPT_CAPATH, "/etc/grid-security/certificates");
+      // if ( status != CURLE_OK ) throw std::runtime_error("curle fail");
       std::vector<S3RequestWrapper*> to_defer;
       while(running_) {
         FD_ZERO(&read_fds);
