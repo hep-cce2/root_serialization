@@ -99,7 +99,7 @@ private:
   // then collate() calls appendProductBuffer() with the above TaskHolder as callback (or original callback)
   // printSummary() takes care of the tails by setting last=true in the calls
   void collateProducts(EventIdentifier const& iEventID, SerializeStrategy const& iSerializers, TaskHolder iCallback) const;
-  void appendProductBuffer(ProductOutputBuffer& buf, const std::string_view blob, TaskHolder iCallback, bool last, SmallBuffers smallbuffers) const;
+  void appendProductBuffer(ProductOutputBuffer& buf, std::string&& blob, TaskHolder iCallback, bool last, SmallBuffers smallbuffers) const;
   TaskHolder makeProductsDoneCallback(TaskHolder iCallback, SmallBuffers smallbuffers, bool last) const;
   void flushEventStripe(const objstripe::EventStripe& stripe, TaskHolder iCallback, bool last=false) const;
 

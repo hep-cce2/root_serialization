@@ -267,9 +267,9 @@ void S3Outputer::collateProducts(
 
   auto buf = std::begin(buffers_);
   for (const auto& s : iSerializers) {
-    const std::string_view blob(s.blob().data(), s.blob().size());
-    buf->appendQueue_.push(*productsDoneCallback.group(), [this, buf, blob, cb=productsDoneCallback, smallbuffers]() mutable {
-        appendProductBuffer(*buf, blob, std::move(cb), false, smallbuffers);
+    std::string blob(s.blob().data(), s.blob().size());
+    buf->appendQueue_.push(*productsDoneCallback.group(), [this, buf, blob=std::move(blob), cb=productsDoneCallback, smallbuffers]() mutable {
+        appendProductBuffer(*buf, std::move(blob), std::move(cb), false, smallbuffers);
       });
     buf++;
   }
@@ -285,27 +285,30 @@ TaskHolder S3Outputer::makeProductsDoneCallback(TaskHolder iCallback, SmallBuffe
     std::cerr << "flush " + std::to_string(numFireAndForgetCollates_)
         + " " + std::to_string(std::chrono::system_clock::now().time_since_epoch() / std::chrono::milliseconds(1))
         + "\n";
-    auto nextCallback = ( (numFireAndForgetCollates_ < maxFireAndForgetCollates_) and ~last ) ?
+    assert(last xor (iCallback.group() != tails_group_.get()));
+    auto nextCallback = ( (numFireAndForgetCollates_ < maxFireAndForgetCollates_) ) ?
       numFireAndForgetCollates_++,
       TaskHolder(
-          *tails_group_,
+          *iCallback.group(),
           make_functor_task([this, task=tails_group_->defer([](){})]() mutable {numFireAndForgetCollates_--; tails_group_->run(std::move(task));})
         ) : std::move(iCallback);
     return TaskHolder(*nextCallback.group(), make_functor_task(
-        [this, stripeOut=std::move(stripeOut), callback=std::move(nextCallback), smallbuffers]() mutable {
-          if(verbose_ >= 2) { std::cout << "reached event flush size "s + std::to_string(eventFlushSize_) + ", flushing\n"; }
+        [this, stripeOut=std::move(stripeOut), callback=std::move(nextCallback), smallbuffers=std::move(smallbuffers), last]() mutable {
+          if(verbose_ >= 2) { std::cout << "reached event flush size "s + std::to_string(stripeOut.events_size()) + ", flushing\n"; }
           // merge buffers by greedy algorithm
           std::sort(smallbuffers->begin(), smallbuffers->end(), [](const auto &a, const auto &b){ return a.second.content().size() > b.second.content().size(); });
           size_t iGroup{0};
           auto it = smallbuffers->begin();
           objstripe::ProductGroupStripe gout;
-          do {
+          while ( it != smallbuffers->end() ) {
             size_t nbytes{0};
             auto* group = stripeOut.add_groups();
             while ( (nbytes < productBufferFlushMinBytes_) and (it != smallbuffers->end()) ) {
               nbytes += it->second.content().size();
-              group->mutable_names()->Add(std::move(it->first));
-              gout.mutable_products()->Add(std::move(it->second));
+              auto* name = group->add_names();
+              std::swap(*name, it->first);
+              auto* prod = gout.add_products();
+              std::swap(*prod, it->second);
               it++;
             }
             auto req = std::make_shared<S3Request>(S3Request::Type::put, objPrefix_ + "/group" + std::to_string(iGroup) + "/" + std::to_string(stripeOut.events(0).offset()));
@@ -318,9 +321,9 @@ TaskHolder S3Outputer::makeProductsDoneCallback(TaskHolder iCallback, SmallBuffe
             conn_->submit(std::move(req), std::move(putDoneTask));
             iGroup++;
             gout.clear_products();
-          } while ( it != smallbuffers->end() );
-          flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback)]() {
-              flushEventStripe(stripeOut, std::move(callback));
+          }
+          flushQueue_.push(*callback.group(), [this, stripeOut=std::move(stripeOut), callback=std::move(callback), last]() {
+              flushEventStripe(stripeOut, std::move(callback), last);
             });
         }
       ));
@@ -331,7 +334,7 @@ TaskHolder S3Outputer::makeProductsDoneCallback(TaskHolder iCallback, SmallBuffe
 
 void S3Outputer::appendProductBuffer(
     ProductOutputBuffer& buf,
-    const std::string_view blob,
+    std::string&& blob,
     TaskHolder iCallback,
     bool last,
     SmallBuffers smallbuffers
@@ -378,13 +381,19 @@ void S3Outputer::appendProductBuffer(
     }
 
     std::string name = buf.prefix_ + "/" + std::to_string(buf.stripe_.globaloffset());
-    if ( (bufferNevents == eventFlushSize_) && (bufferNbytes <= buf.info_->flushminbytes()) ) {
+    if ( (last or (bufferNevents == eventFlushSize_)) && (bufferNbytes <= buf.info_->flushminbytes()) ) {
       // too small buffer, put it on a merge queue
       objstripe::ProductStripe out;
       out.mutable_content()->reserve(bufferNbytes);
       out.mutable_compression()->CopyFrom(buf.stripe_.compression());
+      out.set_globaloffset(buf.stripe_.globaloffset());
+      assert(out.content().size() == 0);
+      assert(buf.stripe_.content().size() == bufferNbytes);
       std::swap(out, buf.stripe_);
-      smallbuffers->push_back({name, std::move(out)});
+      assert(out.content().size() == bufferNbytes);
+      assert(buf.stripe_.content().size() == 0);
+      auto it = smallbuffers->emplace_back(name, std::move(out));
+      assert(it->second.content().size() == bufferNbytes);
       // leave iCallback alive til end of function
     } else {
       auto req = std::make_shared<S3Request>(S3Request::Type::put, name);
