@@ -10,6 +10,8 @@
 
 #include "CLI11.hpp"
 
+#define TBB_PREVIEW_TASK_GROUP_EXTENSIONS 1 // for task_group::defer
+
 #include "outputerFactoryGenerator.h"
 #include "sourceFactoryGenerator.h"
 #include "waiterFactoryGenerator.h"
@@ -133,6 +135,8 @@ int main(int argc, char* argv[]) {
   }
   std::cout <<"finished warmup"<<std::endl;
 
+  tbb::task_arena arena(parallelism);
+
   auto out = outFactory(nLanes);
   auto source = sourceFactory(nLanes, nEvents);
   std::unique_ptr<WaiterBase> waiter;
@@ -150,8 +154,6 @@ int main(int argc, char* argv[]) {
   }
 
   std::atomic<long> ievt{0};
-  
-  tbb::task_arena arena(parallelism);
 
   decltype(std::chrono::high_resolution_clock::now()) start;
   auto pOut = out.get();

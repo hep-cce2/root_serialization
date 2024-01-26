@@ -24,11 +24,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g3")
+add_compile_definitions(TBB_USE_THREADING_TOOLS=1)
 
 find_package(ROOT REQUIRED COMPONENTS Core RIO Tree)
 find_package(TBB REQUIRED)
 find_package(zstd REQUIRED)
 find_package(lz4 REQUIRED)
+find_package(LibLZMA REQUIRED)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
@@ -84,6 +86,7 @@ add_executable(threaded_io_test
   outputerFactoryGenerator.cc
   WaiterFactory.cc
   waiterFactoryGenerator.cc
+  WaitingTaskList.cc
   ScaleWaiter.cc
   EventSleepWaiter.cc
   EventUnevenSleepWaiter.cc
@@ -99,6 +102,7 @@ target_compile_definitions(threaded_io_test PUBLIC TBB_PREVIEW_TASK_GROUP_EXTENS
 
 target_link_libraries(threaded_io_test
                       PRIVATE LZ4::lz4
+                              LibLZMA::LibLZMA
                               ROOT::Core
                               ROOT::RIO
                               ROOT::Tree
@@ -187,4 +191,27 @@ if(ENABLE_HDF5)
   add_test(NAME HDFBatchEventsOutputerEmptyTest COMMAND threaded_io_test -s EmptySource -t 1 -n 10 -o HDFBatchEventsOutputer=test_empty_event.h5)
   add_test(NAME TestProductsHDFEvent COMMAND bash -c "${CMAKE_CURRENT_BINARY_DIR}/threaded_io_test -s TestProductsSource -t 1 -n 10 -o HDFEventOutputer=test_prod_e.h5")
   #; ${CMAKE_CURRENT_BINARY_DIR}/threaded_io_test -s HDFSource=test_prodi_e.h5 -t 1 -n 10 -o TestProductsOutputer")
+endif()
+
+option(ENABLE_S3 "Build S3 Sources and Outputers" OFF) # default OFF
+if(ENABLE_S3)
+  if(NOT DEFINED LIBS3_DIR)
+    message(FATAL_ERROR "You must provide LIBS3_DIR variable")
+  endif()
+  find_package(CURL REQUIRED)
+  find_package(Protobuf REQUIRED)
+  include_directories(${Protobuf_INCLUDE_DIRS})
+  include_directories(${CMAKE_CURRENT_BINARY_DIR})
+  protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS objectstripe.proto)
+  target_link_libraries(threaded_io_test PRIVATE ${Protobuf_LIBRARIES})
+  target_sources(threaded_io_test PRIVATE
+    S3Outputer.cc
+    S3Source.cc
+    S3Common.cc
+    ${PROTO_SRCS}
+    )
+  target_include_directories(threaded_io_test PRIVATE ${LIBS3_DIR}/include)
+  target_link_directories(threaded_io_test PRIVATE ${LIBS3_DIR}/lib)
+  target_link_libraries(threaded_io_test PRIVATE s3 curl)
+  # add_test(NAME S3OutputerEmptyTest COMMAND threaded_io_test EmptySource 1 1 0 10 S3Outputer)
 endif()
