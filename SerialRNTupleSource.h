@@ -12,7 +12,7 @@
 
 #include "SharedSourceBase.h"
 #include "SerialTaskQueue.h"
-#include "ROOT/RNTuple.hxx"
+#include "ROOT/RNTupleReader.hxx"
 
 namespace cce::tf {
   class SerialRNTuplePromptRetriever : public DelayedProductRetriever {
@@ -46,7 +46,7 @@ namespace cce::tf {
   private:
     void fillViews(ROOT::Experimental::RNTupleReader& iReader, std::vector<std::string> const& iFieldIDs);
     SerialTaskQueue* queue_;
-    std::vector<ROOT::Experimental::RNTupleView<void>> views_;
+    std::vector<ROOT::Experimental::RNTupleView<void, false>> views_;
     std::vector<void*>* addresses_;
     std::chrono::microseconds accumulatedTime_;
     std::uint64_t eventIndex_ = 0;

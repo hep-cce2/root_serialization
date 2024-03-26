@@ -15,7 +15,7 @@
 #include "summarize_serializers.h"
 #include "SerialTaskQueue.h"
 #include "RNTupleOutputerConfig.h"
-#include <ROOT/RNTuple.hxx>
+#include <ROOT/RNTupleWriter.hxx>
 
 namespace cce::tf {
 
