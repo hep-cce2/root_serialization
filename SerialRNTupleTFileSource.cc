@@ -32,7 +32,7 @@ SerialRNTupleTFileSource::SerialRNTupleTFileSource(unsigned iNLanes, unsigned lo
   bool hasEventID = false;
   bool hasEventAux = false;
   auto const& model = events_->GetModel();
-  auto const& subfields = model.GetConstFieldZero().GetSubFields();
+  auto const& subfields = model.GetConstFieldZero().GetConstSubfields();
   std::vector<std::string> fieldIDs;
   fieldIDs.reserve(subfields.size());
   std::vector<std::string> fieldType;
