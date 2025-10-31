@@ -8,4 +8,5 @@
   <class name="cce::tf::SequenceFinderForBuiltins<char>" ClassVersion="3"/>
   <class name="cce::tf::SequenceFinderForBuiltins<float>" ClassVersion="3"/>
   <class name="cce::tf::SequenceFinderForBuiltins<double>" ClassVersion="3"/>
+  <class name="vector<pair<string,string> >"/>
 </lcgdict>

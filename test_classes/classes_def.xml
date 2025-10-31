@@ -28,4 +28,5 @@
   <class name="cce::tf::test::RecursiveClass" ClassVersion="3"/>
   <class name="cce::tf::test::RecursivePointerClass" ClassVersion="3"/>
   <class name="cce::tf::test::OffsetTest<short,cce::tf::test::TestClassWithFloatVector>"/>
+  <class name="vector<pair<string,string> >"/>
 </lcgdict>
